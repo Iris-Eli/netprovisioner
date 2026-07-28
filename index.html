@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Iris P&amp;C Provisioner</title>
+<!--
+  Iris P&C Provisioner — point-and-click network provisioning portal.
+  PUBLIC repo: UI only. NO private data, NO secrets, NO tenant/site IDs committed here.
+  All environment config is loaded at runtime from ./config.js (git-ignored) or window.IRIS_CONFIG.
+  Data lives in SharePoint; deploys run server-side via the CVaaS connector (never from the browser).
+
+  First tab: Arista VPWS. Framework supports adding VLAN / VRF / L3VPN tabs later.
+-->
+<style>
+  :root{
+    /* Swap these for the standard Iris palette used in the other projects. */
+    --brand:#0b3d5c;         /* header / primary */
+    --brand-2:#12557f;
+    --accent:#1f9ee8;        /* action accent */
+    --bg:#f4f6f8;
+    --surface:#ffffff;
+    --text:#1c2b36;
+    --muted:#6b7c8a;
+    --border:#dfe6ec;
+    --ok:#1f9d55;
+    --warn:#c9860a;
+    --err:#c0392b;
+    --radius:10px;
+    --shadow:0 1px 3px rgba(16,42,67,.08),0 4px 16px rgba(16,42,67,.06);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text)}
+  header.app{background:linear-gradient(90deg,var(--brand),var(--brand-2));color:#fff;padding:0 20px;display:flex;align-items:center;gap:22px;box-shadow:var(--shadow)}
+  header.app .brand{font-weight:700;font-size:18px;padding:16px 0;letter-spacing:.3px;white-space:nowrap}
+  header.app .brand small{font-weight:400;opacity:.8;font-size:12px;display:block;margin-top:2px}
+  nav.tabs{display:flex;gap:2px;margin-left:8px}
+  nav.tabs button{background:transparent;border:0;color:#dbe7f0;padding:20px 16px;font-size:14px;cursor:pointer;border-bottom:3px solid transparent}
+  nav.tabs button.active{color:#fff;border-bottom-color:var(--accent);font-weight:600}
+  nav.tabs button:disabled{opacity:.45;cursor:default}
+  header.app .spacer{flex:1}
+  header.app .who{font-size:13px;opacity:.9}
+  main{max-width:1200px;margin:22px auto;padding:0 20px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+  .toolbar{display:flex;gap:12px;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border)}
+  .toolbar input[type=search]{flex:1;padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px}
+  button.primary{background:var(--accent);color:#fff;border:0;padding:9px 16px;border-radius:8px;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;border:1px solid var(--border);padding:9px 14px;border-radius:8px;cursor:pointer;color:var(--text)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);white-space:nowrap}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.4px}
+  tr:hover td{background:#f8fafc;cursor:pointer}
+  .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600}
+  .pill.Deployed{background:#e6f6ec;color:var(--ok)}
+  .pill.Pending{background:#fef3e0;color:var(--warn)}
+  .pill.Failed{background:#fbe9e7;color:var(--err)}
+  .muted{color:var(--muted)}
+  /* modal */
+  .overlay{position:fixed;inset:0;background:rgba(16,42,67,.45);display:none;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
+  .overlay.open{display:flex}
+  .modal{background:var(--surface);border-radius:12px;width:min(880px,100%);box-shadow:var(--shadow)}
+  .modal h2{margin:0;padding:18px 22px;border-bottom:1px solid var(--border);font-size:17px}
+  .modal .body{padding:18px 22px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
+  .field label{font-size:12.5px;font-weight:600;color:var(--muted)}
+  .field input,.field select{padding:9px 11px;border:1px solid var(--border);border-radius:8px;font-size:14px;background:#fff}
+  .field .req{color:var(--err)}
+  fieldset{border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin:6px 0 16px}
+  legend{font-weight:700;font-size:13px;padding:0 8px;color:var(--brand)}
+  .modal .foot{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 22px;border-top:1px solid var(--border)}
+  .alarm{background:#fbe9e7;border:1px solid #f3c1ba;color:var(--err);padding:10px 12px;border-radius:8px;font-size:13px;display:none}
+  .alarm.show{display:block}
+  .banner{background:#fff8e6;border:1px solid #f0dca0;color:#7a5c00;padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
+</style>
+</head>
+<body>
+<header class="app">
+  <div class="brand">Iris P&amp;C Provisioner<small>Point &amp; Click Network Provisioning</small></div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="vpws" class="active">Arista VPWS</button>
+    <button data-tab="vlan" disabled title="Coming soon">VLAN</button>
+    <button data-tab="vrf" disabled title="Coming soon">VRF / L3VPN</button>
+  </nav>
+  <div class="spacer"></div>
+  <div class="who" id="who">demo mode</div>
+</header>
+
+<main>
+  <div id="setupBanner" class="banner">
+    Running in <b>demo mode</b> with sample data. To go live, create <code>config.js</code> (git-ignored)
+    with your SharePoint site + list names + Graph client ID, and wire the data layer TODOs. No secrets or
+    private data belong in this public repo.
+  </div>
+
+  <section id="tab-vpws" class="card">
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Search circuits by CID, customer, device, VLAN…"/>
+      <button class="ghost" id="refreshBtn">Refresh</button>
+      <button class="primary" id="newBtn">+ New Circuit</button>
+    </div>
+    <div style="overflow:auto">
+      <table id="circuitsTable">
+        <thead><tr>
+          <th>Circuit ID</th><th>Customer</th><th>Type</th>
+          <th>Endpoint A</th><th>Endpoint B</th><th>VLAN</th><th>Status</th>
+        </tr></thead>
+        <tbody id="circuitsBody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<!-- New/Edit circuit modal -->
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h2 id="modalTitle">New VPWS Circuit</h2>
+    <div class="body">
+      <div class="alarm" id="dupAlarm"></div>
+      <div class="grid">
+        <div class="field"><label>Circuit ID (CID) <span class="req">*</span></label><input id="f_cid" placeholder="e.g. 1001.10.10.EBH.DEMO.001_VLAN_100"/></div>
+        <div class="field"><label>Customer <span class="req">*</span></label><input id="f_customer" list="dl_customers" placeholder="e.g. DEMO_CUST"/></div>
+        <div class="field"><label>Service ID <span class="req">*</span></label><input id="f_serviceid" type="number" placeholder="e.g. 1"/></div>
+        <div class="field"><label>Service Type <span class="req">*</span></label>
+          <select id="f_svctype"><option value="">—</option><option>EBH</option><option>ETH</option><option>MGMT</option><option>ENT</option><option>DIA</option></select></div>
+        <div class="field"><label>ENNI</label><select id="f_enni"><option>No</option><option>Yes</option></select></div>
+      </div>
+
+      <fieldset><legend>Endpoint A</legend><div class="grid" id="epA"></div></fieldset>
+      <fieldset><legend>Endpoint B</legend><div class="grid" id="epB"></div></fieldset>
+    </div>
+    <div class="foot">
+      <span class="muted" id="valMsg"></span>
+      <div style="display:flex;gap:10px">
+        <button class="ghost" id="cancelBtn">Cancel</button>
+        <button class="primary" id="saveBtn">Save circuit</button>
+      </div>
+    </div>
+  </div>
+</div>
+<datalist id="dl_customers"></datalist>
+
+<script>
+/* ============================================================
+   CONFIG — loaded from window.IRIS_CONFIG (set by config.js, git-ignored).
+   Public repo ships with none, so the app runs in DEMO mode.
+   ============================================================ */
+const CFG = window.IRIS_CONFIG || null;
+const DEMO = !CFG;
+
+const ENCAPS = ["match-1-and-preserve","match-1-and-pop","match-2-and-preserve","match-2-and-pop-outer","match-2-and-pop-both","unmatched","unmatched-and-push","untagged-subinterface","untagged-and-push"];
+const POLICERS = ["10Gbps","1Gbps","500Mbps","250Mbps","100Mbps","50Mbps","MGMT"];
+
+/* ============================================================
+   DATA LAYER — swap the DEMO bodies for SharePoint/Graph calls.
+   Follow the NetInventory auth/Graph pattern. Keep ALL CVaaS
+   interaction server-side (the connector); the browser only
+   ever talks to SharePoint.
+   ============================================================ */
+const Data = {
+  async devices(){
+    if(DEMO) return ["DEMO-SW-01","DEMO-SW-02","DEMO-SW-03"];
+    // TODO: GET items from SharePoint "Arista Devices" list -> [Title,...]
+    return [];
+  },
+  async interfaces(device){
+    if(DEMO) return [
+      {name:"Ethernet1",desc:"to Core"},{name:"Ethernet2",desc:"Customer handoff A"},
+      {name:"Ethernet3",desc:"Customer handoff B"},{name:"Ethernet24",desc:"Uplink"}
+    ];
+    // TODO: GET "Arista Interfaces" filtered by Device (indexed) -> [{name,desc},...]
+    return [];
+  },
+  async circuits(){
+    if(DEMO) return [
+      {CID:"1001.10.10.EBH.DEMO.001_VLAN_100",Customer:"DEMO_CUST_A",ServiceType:"EBH",A_Device:"DEMO-SW-01",A_Interface:"Ethernet2",A_VlanTag:100,B_Device:"DEMO-SW-02",B_Interface:"Ethernet3",DeployStatus:"Deployed"},
+      {CID:"2002.20.20.ETH.DEMO.001_VLAN_200",Customer:"DEMO_CUST_B",ServiceType:"ETH",A_Device:"DEMO-SW-01",A_Interface:"Ethernet24",A_VlanTag:200,B_Device:"DEMO-SW-03",B_Interface:"Ethernet1",DeployStatus:"Pending"}
+    ];
+    // TODO: GET items from SharePoint "Arista VPWS Builder" list
+    return [];
+  },
+  async customers(){
+    if(DEMO) return ["DEMO_CUST_A","DEMO_CUST_B","DEMO_CUST_C"];
+    // TODO: distinct Customer values from the circuits list
+    return [];
+  },
+  async saveCircuit(rec){
+    if(DEMO){ console.log("DEMO save (not persisted):",rec); return true; }
+    // TODO: create/update item in "Arista VPWS Builder" (content-approval draft until published).
+    // Deploy happens server-side (connector) — the browser never calls CVaaS.
+    return false;
+  }
+};
+
+/* ============================================================ UI ============================================================ */
+let CIRCUITS = [];
+const $ = s => document.querySelector(s);
+
+function endpointFields(prefix){
+  return `
+    <div class="field"><label>Device <span class="req">*</span></label><select id="f_${prefix}_dev"></select></div>
+    <div class="field"><label>Interface <span class="req">*</span></label><select id="f_${prefix}_int"><option value="">— pick a device first —</option></select></div>
+    <div class="field"><label>Sub-interface / VLAN <span class="req">*</span></label><input id="f_${prefix}_sub" type="number" placeholder="e.g. 3492"/></div>
+    <div class="field"><label>Policer</label><select id="f_${prefix}_pol"><option value="">—</option>${POLICERS.map(p=>`<option>${p}</option>`).join("")}</select></div>
+    <div class="field"><label>Encapsulation</label><select id="f_${prefix}_enc">${ENCAPS.map(e=>`<option${e==="match-1-and-preserve"?" selected":""}>${e}</option>`).join("")}</select></div>
+    <div class="field"><label>Reflector</label><select id="f_${prefix}_ref"><option>Disabled</option><option>Enabled</option></select></div>
+    <div class="field"><label>LACP Passthrough</label><select id="f_${prefix}_lacp"><option>Disabled</option><option>Enabled</option></select></div>
+  `;
+}
+
+async function buildForm(){
+  $("#epA").innerHTML = endpointFields("A");
+  $("#epB").innerHTML = endpointFields("B");
+  const devs = await Data.devices();
+  for(const p of ["A","B"]){
+    const sel = $(`#f_${p}_dev`);
+    sel.innerHTML = `<option value="">— select device —</option>` + devs.map(d=>`<option>${d}</option>`).join("");
+    sel.onchange = async () => {
+      const ints = await Data.interfaces(sel.value);
+      const isel = $(`#f_${p}_int`);
+      isel.innerHTML = `<option value="">— select interface —</option>` +
+        ints.map(i=>`<option value="${i.name}">${i.desc ? i.desc+"  ["+i.name+"]" : i.name}</option>`).join("");
+    };
+  }
+  const cust = await Data.customers();
+  $("#dl_customers").innerHTML = cust.map(c=>`<option value="${c}">`).join("");
+}
+
+function checkDuplicate(){
+  // Alarm if device+interface+subinterface already used by another circuit.
+  const pairs = [["A"],["B"]].map(([p])=>({
+    dev:$(`#f_${p}_dev`).value, int:$(`#f_${p}_int`).value, sub:$(`#f_${p}_sub`).value
+  }));
+  const hits = [];
+  for(const np of pairs){
+    if(!np.dev||!np.int||!np.sub) continue;
+    for(const c of CIRCUITS){
+      for(const e of ["A","B"]){
+        if(String(c[e+"_Device"])===np.dev && String(c[e+"_Interface"])===np.int && String(c[e+"_SubInt"]??c[e+"_VlanTag"]??"")===np.sub){
+          hits.push(`${np.dev} ${np.int}.${np.sub} already used by ${c.CID}`);
+        }
+      }
+    }
+  }
+  const a=$("#dupAlarm");
+  if(hits.length){ a.textContent="⚠ Duplicate: "+hits.join("; "); a.classList.add("show"); }
+  else a.classList.remove("show");
+  return hits.length===0;
+}
+
+function validate(){
+  const need = {"#f_cid":"Circuit ID","#f_customer":"Customer","#f_serviceid":"Service ID","#f_svctype":"Service Type",
+    "#f_A_dev":"Endpoint A device","#f_A_int":"Endpoint A interface","#f_A_sub":"Endpoint A VLAN",
+    "#f_B_dev":"Endpoint B device","#f_B_int":"Endpoint B interface","#f_B_sub":"Endpoint B VLAN"};
+  const missing = Object.entries(need).filter(([s])=>!$(s).value).map(([,n])=>n);
+  if(missing.length){ $("#valMsg").textContent = "Required: "+missing.join(", "); $("#valMsg").style.color="var(--err)"; return false; }
+  $("#valMsg").textContent=""; return true;
+}
+
+async function renderTable(){
+  CIRCUITS = await Data.circuits();
+  const q = $("#search").value.toLowerCase();
+  const rows = CIRCUITS.filter(c => !q || JSON.stringify(c).toLowerCase().includes(q));
+  $("#circuitsBody").innerHTML = rows.map(c=>`
+    <tr>
+      <td><b>${c.CID}</b></td><td>${c.Customer||""}</td><td>${c.ServiceType||""}</td>
+      <td>${c.A_Device||""} <span class="muted">${c.A_Interface||""}</span></td>
+      <td>${c.B_Device||""} <span class="muted">${c.B_Interface||""}</span></td>
+      <td>${c.A_VlanTag||c.A_SubInt||""}</td>
+      <td><span class="pill ${c.DeployStatus||"Pending"}">${c.DeployStatus||"Pending"}</span></td>
+    </tr>`).join("") || `<tr><td colspan="7" class="muted" style="padding:24px;text-align:center">No circuits.</td></tr>`;
+}
+
+function openModal(){ $("#overlay").classList.add("open"); }
+function closeModal(){ $("#overlay").classList.remove("open"); }
+
+async function save(){
+  if(!validate()) return;
+  const ok = checkDuplicate();
+  if(!ok && !confirm("Duplicate interface/subinterface detected. Save anyway?")) return;
+  const rec = {
+    CID:$("#f_cid").value, Customer:$("#f_customer").value, ServiceId:$("#f_serviceid").value,
+    ServiceType:$("#f_svctype").value, ENNI:$("#f_enni").value,
+    A_Device:$("#f_A_dev").value, A_Interface:$("#f_A_int").value, A_SubInt:$("#f_A_sub").value,
+    A_Policer:$("#f_A_pol").value, A_Encap:$("#f_A_enc").value, A_Reflector:$("#f_A_ref").value, A_LacpPassthrough:$("#f_A_lacp").value,
+    B_Device:$("#f_B_dev").value, B_Interface:$("#f_B_int").value, B_SubInt:$("#f_B_sub").value,
+    B_Policer:$("#f_B_pol").value, B_Encap:$("#f_B_enc").value, B_Reflector:$("#f_B_ref").value, B_LacpPassthrough:$("#f_B_lacp").value,
+    DeployStatus:"Pending"
+  };
+  await Data.saveCircuit(rec);
+  closeModal(); renderTable();
+}
+
+document.addEventListener("DOMContentLoaded", async ()=>{
+  $("#who").textContent = DEMO ? "demo mode (not connected)" : "connected";
+  if(!DEMO) $("#setupBanner").style.display="none";
+  await buildForm();
+  await renderTable();
+  $("#newBtn").onclick = ()=>{ openModal(); };
+  $("#cancelBtn").onclick = closeModal;
+  $("#saveBtn").onclick = save;
+  $("#refreshBtn").onclick = renderTable;
+  $("#search").oninput = renderTable;
+  ["A","B"].forEach(p=>["dev","int","sub"].forEach(f=>{
+    document.addEventListener("change",e=>{ if(e.target.id===`f_${p}_${f}`) checkDuplicate(); });
+  }));
+  document.querySelectorAll("nav.tabs button").forEach(b=> b.onclick=()=>{ if(b.disabled) return;
+    document.querySelectorAll("nav.tabs button").forEach(x=>x.classList.remove("active")); b.classList.add("active"); });
+});
+</script>
+</body>
+</html>
