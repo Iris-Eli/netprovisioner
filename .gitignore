@@ -1,6 +1,0 @@
-# Runtime config with tenant/site/client IDs — never commit
-config.js
-
-# Local/editor cruft
-.DS_Store
-*.log
