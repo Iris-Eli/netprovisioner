@@ -193,12 +193,18 @@ async function listItems(name){
 /* ===== DATA LAYER (demo fallback + real SharePoint) ===== */
 let _ifaceCache=null;
 const Data={
-  async devices(){ if(DEMO) return ["DEMO-SW-01","DEMO-SW-02","DEMO-SW-03"];
-    return (await listItems(SHAREPOINT_CONFIG.lists.devices)).map(f=>f.Title).filter(Boolean).sort(); },
+  // Devices: display HOSTNAME, store SERIAL (=Title, the CVaaS device id). Hostname
+  // falls back to serial while the inventory sync hasn't filled it yet.
+  async devices(){ if(DEMO) return [{serial:"DEMO-SW-01",hostname:"demo-core-01"},{serial:"DEMO-SW-02",hostname:"demo-core-02"},{serial:"DEMO-SW-03",hostname:"demo-edge-03"}];
+    return (await listItems(SHAREPOINT_CONFIG.lists.devices))
+      .map(f=>({serial:f.Title,hostname:((f.Hostname||"").trim())||f.Title}))
+      .filter(d=>d.serial)
+      .sort((a,b)=>a.hostname.localeCompare(b.hostname,undefined,{numeric:true,sensitivity:"base"})); },
   async interfaces(device){
     if(DEMO) return [{name:"Ethernet1",desc:"to Core"},{name:"Ethernet2",desc:"Customer handoff A"},{name:"Ethernet3",desc:"Customer handoff B"},{name:"Ethernet24",desc:"Uplink"}];
     if(!_ifaceCache) _ifaceCache=await listItems(SHAREPOINT_CONFIG.lists.interfaces);
-    return _ifaceCache.filter(f=>f.Device===device).map(f=>({name:f.InterfaceName,desc:f.Description||""}));
+    return _ifaceCache.filter(f=>f.Device===device).map(f=>({name:f.InterfaceName,desc:f.Description||""}))
+      .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:"base"}));
   },
   async circuits(){ if(DEMO) return [
       {CID:"1001.10.10.EBH.DEMO.001_VLAN_100",Customer:"DEMO_CUST_A",ServiceType:"EBH",A_Device:"DEMO-SW-01",A_Interface:"Ethernet2",A_VlanTag:100,B_Device:"DEMO-SW-02",B_Interface:"Ethernet3",DeployStatus:"Deployed"},
@@ -213,7 +219,9 @@ const Data={
 };
 
 /* ===== UI ===== */
-let CIRCUITS=[]; const $=s=>document.querySelector(s);
+let CIRCUITS=[], DEVMAP={}; const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const devName=serial=>DEVMAP[serial]||serial||""; // serial -> hostname for display
 function endpointFields(p){ return `
   <div class="field"><label>Device <span class="req">*</span></label><select id="f_${p}_dev"></select></div>
   <div class="field"><label>Interface <span class="req">*</span></label><select id="f_${p}_int"><option value="">— pick a device first —</option></select></div>
@@ -225,9 +233,11 @@ function endpointFields(p){ return `
 async function buildForm(){
   $("#epA").innerHTML=endpointFields("A"); $("#epB").innerHTML=endpointFields("B");
   const devs=await Data.devices();
+  DEVMAP={}; devs.forEach(d=>{DEVMAP[d.serial]=d.hostname;});
   for(const p of ["A","B"]){ const sel=$(`#f_${p}_dev`);
-    sel.innerHTML=`<option value="">— select device —</option>`+devs.map(d=>`<option>${d}</option>`).join("");
-    sel.onchange=async()=>{ const ints=await Data.interfaces(sel.value); $(`#f_${p}_int`).innerHTML=`<option value="">— select interface —</option>`+ints.map(i=>`<option value="${i.name}">${i.desc?i.desc+"  ["+i.name+"]":i.name}</option>`).join(""); }; }
+    // option value = SERIAL (bound to circuit / sent to CVaaS); text = HOSTNAME.
+    sel.innerHTML=`<option value="">— select device —</option>`+devs.map(d=>`<option value="${esc(d.serial)}">${esc(d.hostname)}</option>`).join("");
+    sel.onchange=async()=>{ const ints=await Data.interfaces(sel.value); $(`#f_${p}_int`).innerHTML=`<option value="">— select interface —</option>`+ints.map(i=>`<option value="${esc(i.name)}">${esc(i.name)}${i.desc?" — "+esc(i.desc):""}</option>`).join(""); }; }
   $("#dl_customers").innerHTML=(await Data.customers()).map(c=>`<option value="${c}">`).join("");
 }
 function checkDuplicate(){
@@ -248,10 +258,12 @@ function validate(){
 }
 async function renderTable(){
   try{ CIRCUITS=await Data.circuits(); }catch(e){ alert("Load failed: "+e.message); return; }
-  const q=$("#search").value.toLowerCase(); const rows=CIRCUITS.filter(c=>!q||JSON.stringify(c).toLowerCase().includes(q));
-  $("#circuitsBody").innerHTML=rows.map(c=>`<tr><td><b>${c.CID||""}</b></td><td>${c.Customer||""}</td><td>${c.ServiceType||""}</td>
-    <td>${c.A_Device||""} <span class="muted">${c.A_Interface||""}</span></td><td>${c.B_Device||""} <span class="muted">${c.B_Interface||""}</span></td>
-    <td>${c.A_VlanTag||c.A_SubInt||""}</td><td><span class="pill ${c.DeployStatus||"Pending"}">${c.DeployStatus||"Pending"}</span></td></tr>`).join("")
+  const q=$("#search").value.toLowerCase();
+  // include mapped hostnames so engineers can search by hostname, not just serial.
+  const rows=CIRCUITS.filter(c=>!q||(JSON.stringify(c)+" "+devName(c.A_Device)+" "+devName(c.B_Device)).toLowerCase().includes(q));
+  $("#circuitsBody").innerHTML=rows.map(c=>`<tr><td><b>${esc(c.CID)}</b></td><td>${esc(c.Customer)}</td><td>${esc(c.ServiceType)}</td>
+    <td>${esc(devName(c.A_Device))} <span class="muted">${esc(c.A_Interface)}</span></td><td>${esc(devName(c.B_Device))} <span class="muted">${esc(c.B_Interface)}</span></td>
+    <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td><span class="pill ${c.DeployStatus||"Pending"}">${esc(c.DeployStatus||"Pending")}</span></td></tr>`).join("")
     || `<tr><td colspan="7" class="muted" style="padding:24px;text-align:center">No circuits.</td></tr>`;
 }
 async function save(){
