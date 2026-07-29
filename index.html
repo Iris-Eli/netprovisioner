@@ -6,36 +6,32 @@
 <title>Net Provisioner</title>
 <!--
   Net Provisioner — point-and-click network provisioning portal.
-  PUBLIC repo: this index.html only. NO private data, NO secrets, NO tenant/site IDs.
-  Runtime config loads from window.IRIS_CONFIG (config.js, kept in the private -source repo).
-  No config -> DEMO mode with fake sample data.
-  Data lives in SharePoint; deploys run server-side via the CVaaS connector (never the browser).
-  First module: Arista VPWS. Built to grow tabs (VLAN, VRF/L3VPN, …).
+  Public repo hosts this index.html only. Config below (clientId/tenant/siteId) are
+  NON-secret identifiers, same as NetInventory; access is fully Entra-gated at sign-in.
+  Data lives in SharePoint (via Graph, as the signed-in user). CVaaS is NEVER called
+  from the browser — deploys run server-side via the connector.
+  First module: Arista VPWS.
 -->
+<script src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
 <style>
   :root{
-    /* NetInventory palette (dark) */
     --bg-primary:#0a0e14; --bg-secondary:#12161f; --bg-tertiary:#1a1f2b; --bg-hover:#252b3a;
-    --border-color:#2d3548;
-    --text-primary:#e6e8eb; --text-secondary:#9ca3af; --text-tertiary:#6b7280;
-    --accent-primary:#8b5cf6; --accent-secondary:#a78bfa;
-    --success:#00ff88; --warning:#ffaa00; --danger:#ff4466;
-    --radius:10px;
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --border-color:#2d3548; --text-primary:#e6e8eb; --text-secondary:#9ca3af; --text-tertiary:#6b7280;
+    --accent-primary:#8b5cf6; --accent-secondary:#a78bfa; --success:#00ff88; --warning:#ffaa00; --danger:#ff4466;
+    --radius:10px; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg-primary);color:var(--text-primary)}
   header.app{background:var(--bg-secondary);border-bottom:1px solid var(--border-color);padding:0 22px;display:flex;align-items:center;gap:26px}
-  .logo h1{margin:0;font-size:20px;font-weight:800;letter-spacing:-.5px;
-    background:linear-gradient(135deg,var(--accent-primary),var(--accent-secondary));
-    -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;padding:16px 0 4px}
+  .logo h1{margin:0;font-size:20px;font-weight:800;letter-spacing:-.5px;background:linear-gradient(135deg,var(--accent-primary),var(--accent-secondary));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;padding:16px 0 4px}
   .logo .version{font-size:10.5px;color:var(--text-tertiary);font-weight:600;letter-spacing:.5px;font-family:"JetBrains Mono",ui-monospace,monospace;padding-bottom:14px}
   nav.tabs{display:flex;gap:2px}
   nav.tabs button{background:transparent;border:0;color:var(--text-secondary);padding:22px 16px;font-size:14px;cursor:pointer;border-bottom:2px solid transparent}
   nav.tabs button.active{color:var(--text-primary);border-bottom-color:var(--accent-primary);font-weight:600}
   nav.tabs button:disabled{opacity:.4;cursor:default}
   header.app .spacer{flex:1}
-  header.app .who{font-size:12.5px;color:var(--text-tertiary)}
+  header.app .who{font-size:12.5px;color:var(--text-tertiary);display:flex;align-items:center;gap:10px}
+  header.app .who button{background:var(--bg-tertiary);border:1px solid var(--border-color);color:var(--text-secondary);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
   main{max-width:1220px;margin:22px auto;padding:0 22px}
   .card{background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:var(--radius)}
   .toolbar{display:flex;gap:12px;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border-color)}
@@ -68,44 +64,52 @@
   .alarm.show{display:block}
   .banner{background:rgba(255,170,0,.1);border:1px solid rgba(255,170,0,.35);color:var(--warning);padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
   code{background:var(--bg-tertiary);padding:1px 6px;border-radius:5px;font-size:12px}
+  #authGate{position:fixed;inset:0;background:var(--bg-primary);display:none;align-items:center;justify-content:center;flex-direction:column;gap:18px;text-align:center}
+  #authGate.show{display:flex}
+  #authGate h1{font-size:30px;margin:0;background:linear-gradient(135deg,var(--accent-primary),var(--accent-secondary));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  #app{display:none}
+  #app.show{display:block}
 </style>
 </head>
 <body>
-<header class="app">
-  <div class="logo"><h1>Net Provisioner</h1><div class="version">IRIS · v0.1</div></div>
-  <nav class="tabs" id="tabs">
-    <button data-tab="vpws" class="active">Arista VPWS</button>
-    <button data-tab="vlan" disabled title="Coming soon">VLAN</button>
-    <button data-tab="vrf" disabled title="Coming soon">VRF / L3VPN</button>
-  </nav>
-  <div class="spacer"></div>
-  <div class="who" id="who">demo mode</div>
-</header>
 
-<main>
-  <div id="setupBanner" class="banner">
-    Running in <b>demo mode</b> with sample data. To go live, provide <code>config.js</code> (from the private
-    -source repo) with your SharePoint site + list names + Graph client ID, and wire the data-layer TODOs.
-    No secrets or private data belong in this public repo.
-  </div>
+<div id="authGate">
+  <h1>Net Provisioner</h1>
+  <div class="muted" id="authMsg">Sign in with your Iris account to continue.</div>
+  <button class="primary" id="signInBtn" style="font-size:15px;padding:11px 22px">Sign in with Microsoft</button>
+</div>
 
-  <section id="tab-vpws" class="card">
-    <div class="toolbar">
-      <input id="search" type="search" placeholder="Search circuits by CID, customer, device, VLAN…"/>
-      <button class="ghost" id="refreshBtn">Refresh</button>
-      <button class="primary" id="newBtn">+ New Circuit</button>
+<div id="app">
+  <header class="app">
+    <div class="logo"><h1>Net Provisioner</h1><div class="version">IRIS · v0.1</div></div>
+    <nav class="tabs" id="tabs">
+      <button data-tab="vpws" class="active">Arista VPWS</button>
+      <button data-tab="vlan" disabled title="Coming soon">VLAN</button>
+      <button data-tab="vrf" disabled title="Coming soon">VRF / L3VPN</button>
+    </nav>
+    <div class="spacer"></div>
+    <div class="who"><span id="who">demo mode</span><button id="signOutBtn" style="display:none">Sign out</button></div>
+  </header>
+  <main>
+    <div id="setupBanner" class="banner" style="display:none">
+      <b>Demo mode</b> — no <code>clientId</code> configured, showing sample data. Set your Entra SPA
+      client ID in <code>SHAREPOINT_CONFIG</code> to connect to SharePoint.
     </div>
-    <div style="overflow:auto">
-      <table id="circuitsTable">
-        <thead><tr>
-          <th>Circuit ID</th><th>Customer</th><th>Type</th>
-          <th>Endpoint A</th><th>Endpoint B</th><th>VLAN</th><th>Status</th>
-        </tr></thead>
-        <tbody id="circuitsBody"></tbody>
-      </table>
-    </div>
-  </section>
-</main>
+    <section id="tab-vpws" class="card">
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Search circuits by CID, customer, device, VLAN…"/>
+        <button class="ghost" id="refreshBtn">Refresh</button>
+        <button class="primary" id="newBtn">+ New Circuit</button>
+      </div>
+      <div style="overflow:auto">
+        <table id="circuitsTable">
+          <thead><tr><th>Circuit ID</th><th>Customer</th><th>Type</th><th>Endpoint A</th><th>Endpoint B</th><th>VLAN</th><th>Status</th></tr></thead>
+          <tbody id="circuitsBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
 
 <div class="overlay" id="overlay">
   <div class="modal">
@@ -125,110 +129,167 @@
     </div>
     <div class="foot">
       <span class="muted" id="valMsg"></span>
-      <div style="display:flex;gap:10px">
-        <button class="ghost" id="cancelBtn">Cancel</button>
-        <button class="primary" id="saveBtn">Save circuit</button>
-      </div>
+      <div style="display:flex;gap:10px"><button class="ghost" id="cancelBtn">Cancel</button><button class="primary" id="saveBtn">Save circuit</button></div>
     </div>
   </div>
 </div>
 <datalist id="dl_customers"></datalist>
 
 <script>
-const CFG = window.IRIS_CONFIG || null;
-const DEMO = !CFG;
-const ENCAPS = ["match-1-and-preserve","match-1-and-pop","match-2-and-preserve","match-2-and-pop-outer","match-2-and-pop-both","unmatched","unmatched-and-push","untagged-subinterface","untagged-and-push"];
-const POLICERS = ["10Gbps","1Gbps","500Mbps","250Mbps","100Mbps","50Mbps","MGMT"];
+/* ===== CONFIG (non-secret identifiers, same pattern as NetInventory) =====
+   tenantId + siteId are the shared Engineering Priorities site (reused from NetInventory).
+   Put the Net Provisioner SPA app's Application (client) ID below. Until then = DEMO mode. */
+const SHAREPOINT_CONFIG = {
+  clientId: "PUT_NET_PROVISIONER_SPA_CLIENT_ID_HERE",
+  tenantId: "iristransport.onmicrosoft.com",
+  siteId:   "iristransport.sharepoint.com,4e195a2f-61e0-424d-a85e-6c0b3cab7267,613c2b2d-96f5-48a3-a65d-6f190ed5926c",
+  lists: { circuits:"Arista VPWS Builder", devices:"Arista Devices", interfaces:"Arista Interfaces" }
+};
+const DEMO = !SHAREPOINT_CONFIG.clientId || SHAREPOINT_CONFIG.clientId.startsWith("PUT_");
+const ENCAPS=["match-1-and-preserve","match-1-and-pop","match-2-and-preserve","match-2-and-pop-outer","match-2-and-pop-both","unmatched","unmatched-and-push","untagged-subinterface","untagged-and-push"];
+const POLICERS=["10Gbps","1Gbps","500Mbps","250Mbps","100Mbps","50Mbps","MGMT"];
 
-/* DATA LAYER — swap DEMO bodies for SharePoint/Graph (NetInventory auth pattern).
-   Browser talks to SharePoint only; CVaaS is server-side (the connector). */
-const Data = {
+/* ===== AUTH (MSAL) ===== */
+let msalInstance=null, _token=null, _tokenExp=0;
+const loginRequest={scopes:["https://graph.microsoft.com/.default"]};
+function initMsal(){
+  msalInstance=new msal.PublicClientApplication({
+    auth:{clientId:SHAREPOINT_CONFIG.clientId, authority:`https://login.microsoftonline.com/${SHAREPOINT_CONFIG.tenantId}`, redirectUri:window.location.origin+window.location.pathname},
+    cache:{cacheLocation:"localStorage", storeAuthStateInCookie:false}
+  });
+}
+async function getToken(){
+  if(_token && Date.now()<_tokenExp-60000) return _token;
+  const acct=msalInstance.getActiveAccount()||msalInstance.getAllAccounts()[0];
+  const r=await msalInstance.acquireTokenSilent({...loginRequest, account:acct});
+  _token=r.accessToken; _tokenExp=Date.now()+3500000; return _token;
+}
+
+/* ===== GRAPH ===== */
+async function graph(endpoint,opts={}){
+  const t=await getToken();
+  const r=await fetch("https://graph.microsoft.com/v1.0"+endpoint,{...opts,headers:{Authorization:"Bearer "+t,"Content-Type":"application/json",...(opts.headers||{})}});
+  if(!r.ok) throw new Error("Graph "+r.status+": "+await r.text());
+  return r.status===204?null:r.json();
+}
+async function graphAll(endpoint){
+  let out=[], url=endpoint;
+  while(url){ const d=await graph(url); out=out.concat(d.value||[]); url=d["@odata.nextLink"]?d["@odata.nextLink"].replace("https://graph.microsoft.com/v1.0",""):null; }
+  return out;
+}
+const _listIds={};
+async function listId(name){
+  if(_listIds[name]) return _listIds[name];
+  const d=await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists?$filter=displayName eq '${name.replace(/'/g,"''")}'`);
+  if(!d.value.length) throw new Error("List not found: "+name);
+  return _listIds[name]=d.value[0].id;
+}
+async function listItems(name){
+  const id=await listId(name);
+  const items=await graphAll(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items?$expand=fields&$top=999`);
+  return items.map(i=>i.fields);
+}
+
+/* ===== DATA LAYER (demo fallback + real SharePoint) ===== */
+let _ifaceCache=null;
+const Data={
   async devices(){ if(DEMO) return ["DEMO-SW-01","DEMO-SW-02","DEMO-SW-03"];
-    /* TODO: SharePoint "Arista Devices" -> [Title,...] */ return []; },
-  async interfaces(device){ if(DEMO) return [
-      {name:"Ethernet1",desc:"to Core"},{name:"Ethernet2",desc:"Customer handoff A"},
-      {name:"Ethernet3",desc:"Customer handoff B"},{name:"Ethernet24",desc:"Uplink"}];
-    /* TODO: SharePoint "Arista Interfaces" filtered by Device -> [{name,desc}] */ return []; },
+    return (await listItems(SHAREPOINT_CONFIG.lists.devices)).map(f=>f.Title).filter(Boolean).sort(); },
+  async interfaces(device){
+    if(DEMO) return [{name:"Ethernet1",desc:"to Core"},{name:"Ethernet2",desc:"Customer handoff A"},{name:"Ethernet3",desc:"Customer handoff B"},{name:"Ethernet24",desc:"Uplink"}];
+    if(!_ifaceCache) _ifaceCache=await listItems(SHAREPOINT_CONFIG.lists.interfaces);
+    return _ifaceCache.filter(f=>f.Device===device).map(f=>({name:f.InterfaceName,desc:f.Description||""}));
+  },
   async circuits(){ if(DEMO) return [
       {CID:"1001.10.10.EBH.DEMO.001_VLAN_100",Customer:"DEMO_CUST_A",ServiceType:"EBH",A_Device:"DEMO-SW-01",A_Interface:"Ethernet2",A_VlanTag:100,B_Device:"DEMO-SW-02",B_Interface:"Ethernet3",DeployStatus:"Deployed"},
       {CID:"2002.20.20.ETH.DEMO.001_VLAN_200",Customer:"DEMO_CUST_B",ServiceType:"ETH",A_Device:"DEMO-SW-01",A_Interface:"Ethernet24",A_VlanTag:200,B_Device:"DEMO-SW-03",B_Interface:"Ethernet1",DeployStatus:"Pending"}];
-    /* TODO: SharePoint "Arista VPWS Builder" */ return []; },
+    return await listItems(SHAREPOINT_CONFIG.lists.circuits); },
   async customers(){ if(DEMO) return ["DEMO_CUST_A","DEMO_CUST_B","DEMO_CUST_C"];
-    /* TODO: distinct Customer from circuits */ return []; },
+    return [...new Set((await this.circuits()).map(c=>c.Customer).filter(Boolean))].sort(); },
   async saveCircuit(rec){ if(DEMO){ console.log("DEMO save (not persisted):",rec); return true; }
-    /* TODO: create/update in "Arista VPWS Builder" (draft until published). Deploy = server-side connector. */ return false; }
+    const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
+    await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items`,{method:"POST",body:JSON.stringify({fields:rec})});
+    _ifaceCache=null; return true; }
 };
 
-let CIRCUITS = [];
-const $ = s => document.querySelector(s);
+/* ===== UI ===== */
+let CIRCUITS=[]; const $=s=>document.querySelector(s);
 function endpointFields(p){ return `
-    <div class="field"><label>Device <span class="req">*</span></label><select id="f_${p}_dev"></select></div>
-    <div class="field"><label>Interface <span class="req">*</span></label><select id="f_${p}_int"><option value="">— pick a device first —</option></select></div>
-    <div class="field"><label>Sub-interface / VLAN <span class="req">*</span></label><input id="f_${p}_sub" type="number" placeholder="e.g. 100"/></div>
-    <div class="field"><label>Policer</label><select id="f_${p}_pol"><option value="">—</option>${POLICERS.map(x=>`<option>${x}</option>`).join("")}</select></div>
-    <div class="field"><label>Encapsulation</label><select id="f_${p}_enc">${ENCAPS.map(e=>`<option${e==="match-1-and-preserve"?" selected":""}>${e}</option>`).join("")}</select></div>
-    <div class="field"><label>Reflector</label><select id="f_${p}_ref"><option>Disabled</option><option>Enabled</option></select></div>
-    <div class="field"><label>LACP Passthrough</label><select id="f_${p}_lacp"><option>Disabled</option><option>Enabled</option></select></div>`; }
-
+  <div class="field"><label>Device <span class="req">*</span></label><select id="f_${p}_dev"></select></div>
+  <div class="field"><label>Interface <span class="req">*</span></label><select id="f_${p}_int"><option value="">— pick a device first —</option></select></div>
+  <div class="field"><label>Sub-interface / VLAN <span class="req">*</span></label><input id="f_${p}_sub" type="number" placeholder="e.g. 100"/></div>
+  <div class="field"><label>Policer</label><select id="f_${p}_pol"><option value="">—</option>${POLICERS.map(x=>`<option>${x}</option>`).join("")}</select></div>
+  <div class="field"><label>Encapsulation</label><select id="f_${p}_enc">${ENCAPS.map(e=>`<option${e==="match-1-and-preserve"?" selected":""}>${e}</option>`).join("")}</select></div>
+  <div class="field"><label>Reflector</label><select id="f_${p}_ref"><option>Disabled</option><option>Enabled</option></select></div>
+  <div class="field"><label>LACP Passthrough</label><select id="f_${p}_lacp"><option>Disabled</option><option>Enabled</option></select></div>`; }
 async function buildForm(){
   $("#epA").innerHTML=endpointFields("A"); $("#epB").innerHTML=endpointFields("B");
   const devs=await Data.devices();
   for(const p of ["A","B"]){ const sel=$(`#f_${p}_dev`);
     sel.innerHTML=`<option value="">— select device —</option>`+devs.map(d=>`<option>${d}</option>`).join("");
-    sel.onchange=async()=>{ const ints=await Data.interfaces(sel.value); const isel=$(`#f_${p}_int`);
-      isel.innerHTML=`<option value="">— select interface —</option>`+ints.map(i=>`<option value="${i.name}">${i.desc?i.desc+"  ["+i.name+"]":i.name}</option>`).join(""); }; }
-  const cust=await Data.customers(); $("#dl_customers").innerHTML=cust.map(c=>`<option value="${c}">`).join("");
+    sel.onchange=async()=>{ const ints=await Data.interfaces(sel.value); $(`#f_${p}_int`).innerHTML=`<option value="">— select interface —</option>`+ints.map(i=>`<option value="${i.name}">${i.desc?i.desc+"  ["+i.name+"]":i.name}</option>`).join(""); }; }
+  $("#dl_customers").innerHTML=(await Data.customers()).map(c=>`<option value="${c}">`).join("");
 }
 function checkDuplicate(){
   const pairs=[["A"],["B"]].map(([p])=>({dev:$(`#f_${p}_dev`).value,int:$(`#f_${p}_int`).value,sub:$(`#f_${p}_sub`).value}));
   const hits=[];
   for(const np of pairs){ if(!np.dev||!np.int||!np.sub) continue;
-    for(const c of CIRCUITS){ for(const e of ["A","B"]){
+    for(const c of CIRCUITS) for(const e of ["A","B"])
       if(String(c[e+"_Device"])===np.dev&&String(c[e+"_Interface"])===np.int&&String(c[e+"_SubInt"]??c[e+"_VlanTag"]??"")===np.sub)
-        hits.push(`${np.dev} ${np.int}.${np.sub} already used by ${c.CID}`); }}}
+        hits.push(`${np.dev} ${np.int}.${np.sub} already used by ${c.CID}`); }
   const a=$("#dupAlarm"); if(hits.length){a.textContent="⚠ Duplicate: "+hits.join("; ");a.classList.add("show");}else a.classList.remove("show");
   return hits.length===0;
 }
 function validate(){
-  const need={"#f_cid":"Circuit ID","#f_customer":"Customer","#f_serviceid":"Service ID","#f_svctype":"Service Type",
-    "#f_A_dev":"Endpoint A device","#f_A_int":"Endpoint A interface","#f_A_sub":"Endpoint A VLAN",
-    "#f_B_dev":"Endpoint B device","#f_B_int":"Endpoint B interface","#f_B_sub":"Endpoint B VLAN"};
-  const missing=Object.entries(need).filter(([s])=>!$(s).value).map(([,n])=>n);
-  if(missing.length){$("#valMsg").textContent="Required: "+missing.join(", ");$("#valMsg").style.color="var(--danger)";return false;}
+  const need={"#f_cid":"Circuit ID","#f_customer":"Customer","#f_serviceid":"Service ID","#f_svctype":"Service Type","#f_A_dev":"Endpoint A device","#f_A_int":"Endpoint A interface","#f_A_sub":"Endpoint A VLAN","#f_B_dev":"Endpoint B device","#f_B_int":"Endpoint B interface","#f_B_sub":"Endpoint B VLAN"};
+  const m=Object.entries(need).filter(([s])=>!$(s).value).map(([,n])=>n);
+  if(m.length){$("#valMsg").textContent="Required: "+m.join(", ");$("#valMsg").style.color="var(--danger)";return false;}
   $("#valMsg").textContent="";return true;
 }
 async function renderTable(){
-  CIRCUITS=await Data.circuits(); const q=$("#search").value.toLowerCase();
-  const rows=CIRCUITS.filter(c=>!q||JSON.stringify(c).toLowerCase().includes(q));
-  $("#circuitsBody").innerHTML=rows.map(c=>`<tr>
-    <td><b>${c.CID}</b></td><td>${c.Customer||""}</td><td>${c.ServiceType||""}</td>
-    <td>${c.A_Device||""} <span class="muted">${c.A_Interface||""}</span></td>
-    <td>${c.B_Device||""} <span class="muted">${c.B_Interface||""}</span></td>
-    <td>${c.A_VlanTag||c.A_SubInt||""}</td>
-    <td><span class="pill ${c.DeployStatus||"Pending"}">${c.DeployStatus||"Pending"}</span></td></tr>`).join("")
+  try{ CIRCUITS=await Data.circuits(); }catch(e){ alert("Load failed: "+e.message); return; }
+  const q=$("#search").value.toLowerCase(); const rows=CIRCUITS.filter(c=>!q||JSON.stringify(c).toLowerCase().includes(q));
+  $("#circuitsBody").innerHTML=rows.map(c=>`<tr><td><b>${c.CID||""}</b></td><td>${c.Customer||""}</td><td>${c.ServiceType||""}</td>
+    <td>${c.A_Device||""} <span class="muted">${c.A_Interface||""}</span></td><td>${c.B_Device||""} <span class="muted">${c.B_Interface||""}</span></td>
+    <td>${c.A_VlanTag||c.A_SubInt||""}</td><td><span class="pill ${c.DeployStatus||"Pending"}">${c.DeployStatus||"Pending"}</span></td></tr>`).join("")
     || `<tr><td colspan="7" class="muted" style="padding:24px;text-align:center">No circuits.</td></tr>`;
 }
-function openModal(){$("#overlay").classList.add("open");}
-function closeModal(){$("#overlay").classList.remove("open");}
 async function save(){
-  if(!validate())return; const ok=checkDuplicate();
-  if(!ok&&!confirm("Duplicate interface/subinterface detected. Save anyway?"))return;
+  if(!validate())return; if(!checkDuplicate()&&!confirm("Duplicate interface/subinterface detected. Save anyway?"))return;
   const g=id=>$(id).value;
-  const rec={CID:g("#f_cid"),Customer:g("#f_customer"),ServiceId:g("#f_serviceid"),ServiceType:g("#f_svctype"),ENNI:g("#f_enni"),
-    A_Device:g("#f_A_dev"),A_Interface:g("#f_A_int"),A_SubInt:g("#f_A_sub"),A_Policer:g("#f_A_pol"),A_Encap:g("#f_A_enc"),A_Reflector:g("#f_A_ref"),A_LacpPassthrough:g("#f_A_lacp"),
-    B_Device:g("#f_B_dev"),B_Interface:g("#f_B_int"),B_SubInt:g("#f_B_sub"),B_Policer:g("#f_B_pol"),B_Encap:g("#f_B_enc"),B_Reflector:g("#f_B_ref"),B_LacpPassthrough:g("#f_B_lacp"),
+  const rec={CID:g("#f_cid"),Customer:g("#f_customer"),ServiceId:Number(g("#f_serviceid"))||null,ServiceType:g("#f_svctype"),ENNI:g("#f_enni"),
+    A_Device:g("#f_A_dev"),A_Interface:g("#f_A_int"),A_SubInt:Number(g("#f_A_sub"))||null,A_Policer:g("#f_A_pol"),A_Encap:g("#f_A_enc"),A_Reflector:g("#f_A_ref"),A_LacpPassthrough:g("#f_A_lacp"),
+    B_Device:g("#f_B_dev"),B_Interface:g("#f_B_int"),B_SubInt:Number(g("#f_B_sub"))||null,B_Policer:g("#f_B_pol"),B_Encap:g("#f_B_enc"),B_Reflector:g("#f_B_ref"),B_LacpPassthrough:g("#f_B_lacp"),
     DeployStatus:"Pending"};
-  await Data.saveCircuit(rec); closeModal(); renderTable();
+  try{ await Data.saveCircuit(rec); }catch(e){ alert("Save failed: "+e.message); return; }
+  $("#overlay").classList.remove("open"); renderTable();
 }
-document.addEventListener("DOMContentLoaded",async()=>{
-  $("#who").textContent=DEMO?"demo mode (not connected)":"connected";
-  if(!DEMO)$("#setupBanner").style.display="none";
+async function startApp(){
+  $("#authGate").classList.remove("show"); $("#app").classList.add("show");
+  const acct=DEMO?null:(msalInstance.getActiveAccount()||msalInstance.getAllAccounts()[0]);
+  $("#who").textContent=DEMO?"demo mode (not connected)":(acct?acct.username:"connected");
+  $("#signOutBtn").style.display=DEMO?"none":"inline-block";
+  $("#setupBanner").style.display=DEMO?"block":"none";
   await buildForm(); await renderTable();
-  $("#newBtn").onclick=openModal; $("#cancelBtn").onclick=closeModal; $("#saveBtn").onclick=save;
-  $("#refreshBtn").onclick=renderTable; $("#search").oninput=renderTable;
+}
+function wireUi(){
+  $("#newBtn").onclick=()=>$("#overlay").classList.add("open");
+  $("#cancelBtn").onclick=()=>$("#overlay").classList.remove("open");
+  $("#saveBtn").onclick=save; $("#refreshBtn").onclick=renderTable; $("#search").oninput=renderTable;
+  $("#signOutBtn").onclick=()=>msalInstance.logoutRedirect();
   ["A","B"].forEach(p=>["dev","int","sub"].forEach(f=>document.addEventListener("change",e=>{if(e.target.id===`f_${p}_${f}`)checkDuplicate();})));
-  document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{if(b.disabled)return;
-    document.querySelectorAll("nav.tabs button").forEach(x=>x.classList.remove("active"));b.classList.add("active");});
+  document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{if(b.disabled)return;document.querySelectorAll("nav.tabs button").forEach(x=>x.classList.remove("active"));b.classList.add("active");});
+}
+
+document.addEventListener("DOMContentLoaded",async()=>{
+  wireUi();
+  if(DEMO){ await startApp(); return; }
+  initMsal();
+  const resp=await msalInstance.handleRedirectPromise().catch(e=>{console.error(e);return null;});
+  if(resp&&resp.account) msalInstance.setActiveAccount(resp.account);
+  const acct=msalInstance.getActiveAccount()||msalInstance.getAllAccounts()[0];
+  if(acct){ msalInstance.setActiveAccount(acct); await startApp(); }
+  else { $("#authGate").classList.add("show"); $("#signInBtn").onclick=()=>msalInstance.loginRedirect(loginRequest); }
 });
 </script>
 </body>
