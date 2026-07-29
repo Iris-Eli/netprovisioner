@@ -44,8 +44,14 @@
   tr:hover td{background:var(--bg-hover);cursor:pointer}
   .pill{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11.5px;font-weight:700}
   .pill.Deployed{background:rgba(0,255,136,.12);color:var(--success)}
-  .pill.Pending{background:rgba(255,170,0,.14);color:var(--warning)}
-  .pill.Failed{background:rgba(255,68,102,.14);color:var(--danger)}
+  .pill.Pending,.pill.Planned{background:rgba(255,170,0,.14);color:var(--warning)}
+  .pill.Failed,.pill.Disconnected{background:rgba(255,68,102,.14);color:var(--danger)}
+  /* inline status editor in the table — pill-shaped <select> tinted by value */
+  select.statusSel{border:1px solid var(--border-color);border-radius:20px;padding:3px 26px 3px 10px;font-size:11.5px;font-weight:700;background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer}
+  select.statusSel.Deployed{color:var(--success);border-color:rgba(0,255,136,.4)}
+  select.statusSel.Planned{color:var(--warning);border-color:rgba(255,170,0,.5)}
+  select.statusSel.Disconnected{color:var(--danger);border-color:rgba(255,68,102,.5)}
+  .hint{font-size:11.5px;color:var(--text-tertiary);margin-top:3px}
   .muted{color:var(--text-tertiary)}
   .overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
   .overlay.open{display:flex}
@@ -118,11 +124,14 @@
       <div class="alarm" id="dupAlarm"></div>
       <div class="grid">
         <div class="field"><label>Circuit ID (CID) <span class="req">*</span></label><input id="f_cid" placeholder="e.g. 1001.10.10.EBH.DEMO.001_VLAN_100"/></div>
-        <div class="field"><label>Customer <span class="req">*</span></label><input id="f_customer" list="dl_customers" placeholder="e.g. DEMO_CUST"/></div>
+        <div class="field"><label>Customer <span class="req">*</span></label><input id="f_customer" list="dl_customers" placeholder="Pick a customer or type a new one…" autocomplete="off"/></div>
         <div class="field"><label>Service ID <span class="req">*</span></label><input id="f_serviceid" type="number" placeholder="e.g. 1"/></div>
         <div class="field"><label>Service Type <span class="req">*</span></label>
           <select id="f_svctype"><option value="">—</option><option>EBH</option><option>ETH</option><option>MGMT</option><option>ENT</option><option>DIA</option></select></div>
         <div class="field"><label>ENNI</label><select id="f_enni"><option>No</option><option>Yes</option></select></div>
+        <div class="field"><label>Status <span class="req">*</span></label>
+          <select id="f_status"><option>Planned</option><option>Deployed</option><option>Disconnected</option></select>
+          <div class="hint" id="statusHint"></div></div>
       </div>
       <fieldset><legend>Endpoint A</legend><div class="grid" id="epA"></div></fieldset>
       <fieldset><legend>Endpoint B</legend><div class="grid" id="epB"></div></fieldset>
@@ -143,11 +152,22 @@ const SHAREPOINT_CONFIG = {
   clientId: "f0bc695d-e675-4aa8-a114-8b7935183c30",
   tenantId: "iristransport.onmicrosoft.com",
   siteId:   "iristransport.sharepoint.com,4e195a2f-61e0-424d-a85e-6c0b3cab7267,613c2b2d-96f5-48a3-a65d-6f190ed5926c",
-  lists: { circuits:"Arista VPWS Builder", devices:"Arista Devices", interfaces:"Arista Interfaces" }
+  lists: { circuits:"Arista VPWS Builder", devices:"Arista Devices", interfaces:"Arista Interfaces", customers:"Customers" }
 };
 const DEMO = !SHAREPOINT_CONFIG.clientId || SHAREPOINT_CONFIG.clientId.startsWith("PUT_");
 const ENCAPS=["match-1-and-preserve","match-1-and-pop","match-2-and-preserve","match-2-and-pop-outer","match-2-and-pop-both","unmatched","unmatched-and-push","untagged-subinterface","untagged-and-push"];
 const POLICERS=["10Gbps","1Gbps","500Mbps","250Mbps","100Mbps","50Mbps","MGMT"];
+/* Circuit lifecycle (engineer-controlled intent; drives the server-side connector). */
+const STATUSES=["Planned","Deployed","Disconnected"];
+const STATUS_HINT={
+  Planned:"Building — not pushed to CVaaS yet.",
+  Deployed:"Marked to push to CVaaS (this is the signal the connector acts on).",
+  Disconnected:"Connector removes it from CVaaS (via change control); the row stays here 30 days, then is purged."
+};
+const DEMO_CIRCUITS=[
+  {__id:"d1",CID:"1001.10.10.EBH.DEMO.001_VLAN_100",Customer:"DEMO_CUST_A",ServiceType:"EBH",A_Device:"DEMO-SW-01",A_Interface:"Ethernet2",A_VlanTag:100,B_Device:"DEMO-SW-02",B_Interface:"Ethernet3",Status:"Deployed"},
+  {__id:"d2",CID:"2002.20.20.ETH.DEMO.001_VLAN_200",Customer:"DEMO_CUST_B",ServiceType:"ETH",A_Device:"DEMO-SW-01",A_Interface:"Ethernet24",A_VlanTag:200,B_Device:"DEMO-SW-03",B_Interface:"Ethernet1",Status:"Planned"}
+];
 
 /* ===== AUTH (MSAL) ===== */
 let msalInstance=null, _token=null, _tokenExp=0;
@@ -200,18 +220,42 @@ const Data={
       .map(f=>({serial:f.Title,hostname:((f.Hostname||"").trim())||f.Title}))
       .filter(d=>d.serial)
       .sort((a,b)=>a.hostname.localeCompare(b.hostname,undefined,{numeric:true,sensitivity:"base"})); },
+  // Query ONE device's interfaces via the indexed Device column (server-side), so
+  // this scales past SharePoint's 5,000 view threshold (a full-list scan would break
+  // there). Falls back to a cached client-side filter if the filtered query errors.
   async interfaces(device){
     if(DEMO) return [{name:"Ethernet1",desc:"to Core"},{name:"Ethernet2",desc:"Customer handoff A"},{name:"Ethernet3",desc:"Customer handoff B"},{name:"Ethernet24",desc:"Uplink"}];
-    if(!_ifaceCache) _ifaceCache=await listItems(SHAREPOINT_CONFIG.lists.interfaces);
-    return _ifaceCache.filter(f=>f.Device===device).map(f=>({name:f.InterfaceName,desc:f.Description||""}))
-      .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:"base"}));
+    const byName=a=>a.sort((x,y)=>x.name.localeCompare(y.name,undefined,{numeric:true,sensitivity:"base"}));
+    const shape=f=>({name:f.InterfaceName,desc:f.Description||""});
+    try{
+      const id=await listId(SHAREPOINT_CONFIG.lists.interfaces);
+      const items=await graphAll(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items?$expand=fields&$top=999&$filter=fields/Device eq '${device.replace(/'/g,"''")}'`);
+      return byName(items.map(i=>i.fields).map(shape));
+    }catch(e){
+      if(!_ifaceCache) _ifaceCache=await listItems(SHAREPOINT_CONFIG.lists.interfaces);
+      return byName(_ifaceCache.filter(f=>f.Device===device).map(shape));
+    }
   },
-  async circuits(){ if(DEMO) return [
-      {CID:"1001.10.10.EBH.DEMO.001_VLAN_100",Customer:"DEMO_CUST_A",ServiceType:"EBH",A_Device:"DEMO-SW-01",A_Interface:"Ethernet2",A_VlanTag:100,B_Device:"DEMO-SW-02",B_Interface:"Ethernet3",DeployStatus:"Deployed"},
-      {CID:"2002.20.20.ETH.DEMO.001_VLAN_200",Customer:"DEMO_CUST_B",ServiceType:"ETH",A_Device:"DEMO-SW-01",A_Interface:"Ethernet24",A_VlanTag:200,B_Device:"DEMO-SW-03",B_Interface:"Ethernet1",DeployStatus:"Pending"}];
-    return await listItems(SHAREPOINT_CONFIG.lists.circuits); },
+  async circuits(){ if(DEMO) return DEMO_CIRCUITS;
+    // keep the SharePoint item id (needed to PATCH status / edit)
+    const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
+    const items=await graphAll(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items?$expand=fields&$top=999`);
+    return items.map(i=>({...i.fields, __id:i.id})); },
+  // Dropdown suggestions = the uploaded "Customers" list (when it exists) ∪ customers
+  // already used in circuits. The field stays free-text, so a new customer can be typed.
   async customers(){ if(DEMO) return ["DEMO_CUST_A","DEMO_CUST_B","DEMO_CUST_C"];
-    return [...new Set((await this.circuits()).map(c=>c.Customer).filter(Boolean))].sort(); },
+    let uploaded=[];
+    try{ uploaded=(await listItems(SHAREPOINT_CONFIG.lists.customers)).map(f=>f.Title).filter(Boolean); }
+    catch(e){ /* Customers list not created yet — fall back to circuit-derived */ }
+    const used=(await this.circuits()).map(c=>c.Customer).filter(Boolean);
+    return [...new Set([...uploaded,...used])].sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:"base"})); },
+  // Change one circuit's lifecycle status; stamp/clear DisconnectedDate (the 30-day clock).
+  async setStatus(itemId,status){
+    const fields={Status:status, DisconnectedDate:(status==="Disconnected"? new Date().toISOString():null)};
+    if(DEMO){ const c=DEMO_CIRCUITS.find(x=>x.__id===itemId); if(c){c.Status=status;c.DisconnectedDate=fields.DisconnectedDate;} return true; }
+    const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
+    await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items/${itemId}/fields`,{method:"PATCH",body:JSON.stringify(fields)});
+    return true; },
   async saveCircuit(rec){ if(DEMO){ console.log("DEMO save (not persisted):",rec); return true; }
     const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
     await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items`,{method:"POST",body:JSON.stringify({fields:rec})});
@@ -263,16 +307,21 @@ async function renderTable(){
   const rows=CIRCUITS.filter(c=>!q||(JSON.stringify(c)+" "+devName(c.A_Device)+" "+devName(c.B_Device)).toLowerCase().includes(q));
   $("#circuitsBody").innerHTML=rows.map(c=>`<tr><td><b>${esc(c.CID)}</b></td><td>${esc(c.Customer)}</td><td>${esc(c.ServiceType)}</td>
     <td>${esc(devName(c.A_Device))} <span class="muted">${esc(c.A_Interface)}</span></td><td>${esc(devName(c.B_Device))} <span class="muted">${esc(c.B_Interface)}</span></td>
-    <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td><span class="pill ${c.DeployStatus||"Pending"}">${esc(c.DeployStatus||"Pending")}</span></td></tr>`).join("")
+    <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td>${statusCell(c)}</td></tr>`).join("")
     || `<tr><td colspan="7" class="muted" style="padding:24px;text-align:center">No circuits.</td></tr>`;
 }
+// inline, editable lifecycle status per circuit (changing it PATCHes SharePoint)
+function statusCell(c){ const s=STATUSES.includes(c.Status)?c.Status:"Planned";
+  return `<select class="statusSel ${s}" data-id="${esc(c.__id)}" title="${esc(STATUS_HINT[s])}">`
+    +STATUSES.map(x=>`<option${x===s?" selected":""}>${x}</option>`).join("")+`</select>`; }
 async function save(){
   if(!validate())return; if(!checkDuplicate()&&!confirm("Duplicate interface/subinterface detected. Save anyway?"))return;
   const g=id=>$(id).value;
   const rec={CID:g("#f_cid"),Customer:g("#f_customer"),ServiceId:Number(g("#f_serviceid"))||null,ServiceType:g("#f_svctype"),ENNI:g("#f_enni"),
     A_Device:g("#f_A_dev"),A_Interface:g("#f_A_int"),A_SubInt:Number(g("#f_A_sub"))||null,A_Policer:g("#f_A_pol"),A_Encap:g("#f_A_enc"),A_Reflector:g("#f_A_ref"),A_LacpPassthrough:g("#f_A_lacp"),
     B_Device:g("#f_B_dev"),B_Interface:g("#f_B_int"),B_SubInt:Number(g("#f_B_sub"))||null,B_Policer:g("#f_B_pol"),B_Encap:g("#f_B_enc"),B_Reflector:g("#f_B_ref"),B_LacpPassthrough:g("#f_B_lacp"),
-    DeployStatus:"Pending"};
+    Status:g("#f_status")||"Planned", DeployStatus:"Pending"};
+  if(rec.Status==="Disconnected") rec.DisconnectedDate=new Date().toISOString();
   try{ await Data.saveCircuit(rec); }catch(e){ alert("Save failed: "+e.message); return; }
   $("#overlay").classList.remove("open"); renderTable();
 }
@@ -285,10 +334,18 @@ async function startApp(){
   await buildForm(); await renderTable();
 }
 function wireUi(){
-  $("#newBtn").onclick=()=>$("#overlay").classList.add("open");
+  $("#newBtn").onclick=()=>{ $("#f_status").value="Planned"; $("#statusHint").textContent=STATUS_HINT.Planned; $("#overlay").classList.add("open"); };
   $("#cancelBtn").onclick=()=>$("#overlay").classList.remove("open");
   $("#saveBtn").onclick=save; $("#refreshBtn").onclick=renderTable; $("#search").oninput=renderTable;
   $("#signOutBtn").onclick=()=>msalInstance.logoutRedirect();
+  $("#f_status").onchange=()=>{ $("#statusHint").textContent=STATUS_HINT[$("#f_status").value]||""; };
+  // inline status change in the table -> PATCH SharePoint, then re-render (recolor pill)
+  $("#circuitsBody").addEventListener("change",async e=>{
+    const sel=e.target.closest("select.statusSel"); if(!sel)return;
+    try{ await Data.setStatus(sel.getAttribute("data-id"),sel.value); }
+    catch(err){ alert("Status update failed: "+err.message); }
+    renderTable();
+  });
   ["A","B"].forEach(p=>["dev","int","sub"].forEach(f=>document.addEventListener("change",e=>{if(e.target.id===`f_${p}_${f}`)checkDuplicate();})));
   document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{if(b.disabled)return;document.querySelectorAll("nav.tabs button").forEach(x=>x.classList.remove("active"));b.classList.add("active");});
 }
