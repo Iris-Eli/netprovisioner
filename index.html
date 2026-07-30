@@ -269,7 +269,9 @@ const devName=serial=>DEVMAP[serial]||serial||""; // serial -> hostname for disp
 function endpointFields(p){ return `
   <div class="field"><label>Device <span class="req">*</span></label><select id="f_${p}_dev"></select></div>
   <div class="field"><label>Interface <span class="req">*</span></label><select id="f_${p}_int"><option value="">— pick a device first —</option></select></div>
-  <div class="field"><label>Sub-interface / VLAN <span class="req">*</span></label><input id="f_${p}_sub" type="number" placeholder="e.g. 100"/></div>
+  <div class="field"><label>Sub-interface <span class="req">*</span></label><input id="f_${p}_sub" type="number" placeholder="e.g. 100"/></div>
+  <div class="field"><label>VLAN Tag <span class="req">*</span></label><input id="f_${p}_vlan" type="number" placeholder="usually = sub-interface"/></div>
+  <div class="field"><label>Inner VLAN Tag</label><input id="f_${p}_ivlan" type="number" placeholder="only for double-tag encaps"/><div class="hint">Set only when the encapsulation needs a second (inner) tag.</div></div>
   <div class="field"><label>Policer</label><select id="f_${p}_pol"><option value="">—</option>${POLICERS.map(x=>`<option>${x}</option>`).join("")}</select></div>
   <div class="field"><label>Encapsulation</label><select id="f_${p}_enc">${ENCAPS.map(e=>`<option${e==="match-1-and-preserve"?" selected":""}>${e}</option>`).join("")}</select></div>
   <div class="field"><label>Reflector</label><select id="f_${p}_ref"><option>Disabled</option><option>Enabled</option></select></div>
@@ -282,6 +284,10 @@ async function buildForm(){
     // option value = SERIAL (bound to circuit / sent to CVaaS); text = HOSTNAME.
     sel.innerHTML=`<option value="">— select device —</option>`+devs.map(d=>`<option value="${esc(d.serial)}">${esc(d.hostname)}</option>`).join("");
     sel.onchange=async()=>{ const ints=await Data.interfaces(sel.value); $(`#f_${p}_int`).innerHTML=`<option value="">— select interface —</option>`+ints.map(i=>`<option value="${esc(i.name)}">${esc(i.name)}${i.desc?" — "+esc(i.desc):""}</option>`).join(""); }; }
+  // VLAN tag usually equals the sub-interface — mirror it until the user edits VLAN.
+  for(const p of ["A","B"]){ const sub=$(`#f_${p}_sub`), vlan=$(`#f_${p}_vlan`);
+    vlan.dataset.touched=""; vlan.oninput=()=>{ vlan.dataset.touched="1"; };
+    sub.oninput=()=>{ if(!vlan.dataset.touched) vlan.value=sub.value; }; }
   $("#dl_customers").innerHTML=(await Data.customers()).map(c=>`<option value="${c}">`).join("");
 }
 function checkDuplicate(){
@@ -289,13 +295,13 @@ function checkDuplicate(){
   const hits=[];
   for(const np of pairs){ if(!np.dev||!np.int||!np.sub) continue;
     for(const c of CIRCUITS) for(const e of ["A","B"])
-      if(String(c[e+"_Device"])===np.dev&&String(c[e+"_Interface"])===np.int&&String(c[e+"_SubInt"]??c[e+"_VlanTag"]??"")===np.sub)
+      if(String(c[e+"_Device"])===np.dev&&String(c[e+"_Interface"])===np.int&&String(c[e+"_SubInt"]??"")===np.sub)
         hits.push(`${np.dev} ${np.int}.${np.sub} already used by ${c.CID}`); }
   const a=$("#dupAlarm"); if(hits.length){a.textContent="⚠ Duplicate: "+hits.join("; ");a.classList.add("show");}else a.classList.remove("show");
   return hits.length===0;
 }
 function validate(){
-  const need={"#f_cid":"Circuit ID","#f_customer":"Customer","#f_serviceid":"Service ID","#f_svctype":"Service Type","#f_A_dev":"Endpoint A device","#f_A_int":"Endpoint A interface","#f_A_sub":"Endpoint A VLAN","#f_B_dev":"Endpoint B device","#f_B_int":"Endpoint B interface","#f_B_sub":"Endpoint B VLAN"};
+  const need={"#f_cid":"Circuit ID","#f_customer":"Customer","#f_serviceid":"Service ID","#f_svctype":"Service Type","#f_A_dev":"Endpoint A device","#f_A_int":"Endpoint A interface","#f_A_sub":"Endpoint A sub-interface","#f_A_vlan":"Endpoint A VLAN tag","#f_B_dev":"Endpoint B device","#f_B_int":"Endpoint B interface","#f_B_sub":"Endpoint B sub-interface","#f_B_vlan":"Endpoint B VLAN tag"};
   const m=Object.entries(need).filter(([s])=>!$(s).value).map(([,n])=>n);
   if(m.length){$("#valMsg").textContent="Required: "+m.join(", ");$("#valMsg").style.color="var(--danger)";return false;}
   $("#valMsg").textContent="";return true;
@@ -318,8 +324,8 @@ async function save(){
   if(!validate())return; if(!checkDuplicate()&&!confirm("Duplicate interface/subinterface detected. Save anyway?"))return;
   const g=id=>$(id).value;
   const rec={CID:g("#f_cid"),Customer:g("#f_customer"),ServiceId:Number(g("#f_serviceid"))||null,ServiceType:g("#f_svctype"),ENNI:g("#f_enni"),
-    A_Device:g("#f_A_dev"),A_Interface:g("#f_A_int"),A_SubInt:Number(g("#f_A_sub"))||null,A_Policer:g("#f_A_pol"),A_Encap:g("#f_A_enc"),A_Reflector:g("#f_A_ref"),A_LacpPassthrough:g("#f_A_lacp"),
-    B_Device:g("#f_B_dev"),B_Interface:g("#f_B_int"),B_SubInt:Number(g("#f_B_sub"))||null,B_Policer:g("#f_B_pol"),B_Encap:g("#f_B_enc"),B_Reflector:g("#f_B_ref"),B_LacpPassthrough:g("#f_B_lacp"),
+    A_Device:g("#f_A_dev"),A_Interface:g("#f_A_int"),A_SubInt:Number(g("#f_A_sub"))||null,A_VlanTag:Number(g("#f_A_vlan"))||null,A_InnerVlanTag:Number(g("#f_A_ivlan"))||null,A_Policer:g("#f_A_pol"),A_Encap:g("#f_A_enc"),A_Reflector:g("#f_A_ref"),A_LacpPassthrough:g("#f_A_lacp"),
+    B_Device:g("#f_B_dev"),B_Interface:g("#f_B_int"),B_SubInt:Number(g("#f_B_sub"))||null,B_VlanTag:Number(g("#f_B_vlan"))||null,B_InnerVlanTag:Number(g("#f_B_ivlan"))||null,B_Policer:g("#f_B_pol"),B_Encap:g("#f_B_enc"),B_Reflector:g("#f_B_ref"),B_LacpPassthrough:g("#f_B_lacp"),
     Status:g("#f_status")||"Planned", DeployStatus:"Pending"};
   if(rec.Status==="Disconnected") rec.DisconnectedDate=new Date().toISOString();
   try{ await Data.saveCircuit(rec); }catch(e){ alert("Save failed: "+e.message); return; }
