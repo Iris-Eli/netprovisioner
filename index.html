@@ -109,7 +109,7 @@
       </div>
       <div style="overflow:auto">
         <table id="circuitsTable">
-          <thead><tr><th>Circuit ID</th><th>Customer</th><th>Type</th><th>Endpoint A</th><th>Endpoint B</th><th>VLAN</th><th>Status</th></tr></thead>
+          <thead><tr><th>Circuit ID</th><th>Customer</th><th>Type</th><th>Endpoint A</th><th>Endpoint B</th><th>VLAN</th><th>Status</th><th></th></tr></thead>
           <tbody id="circuitsBody"></tbody>
         </table>
       </div>
@@ -256,10 +256,14 @@ const Data={
     const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
     await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items/${itemId}/fields`,{method:"PATCH",body:JSON.stringify(fields)});
     return true; },
-  async saveCircuit(rec){ if(DEMO){ console.log("DEMO save (not persisted):",rec); return true; }
+  async saveCircuit(rec){ if(DEMO){ DEMO_CIRCUITS.push({...rec, __id:"d"+(DEMO_CIRCUITS.length+1)}); return true; }
     const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
     await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items`,{method:"POST",body:JSON.stringify({fields:rec})});
-    _ifaceCache=null; return true; }
+    _ifaceCache=null; return true; },
+  async updateCircuit(itemId, rec){ if(DEMO){ const c=DEMO_CIRCUITS.find(x=>String(x.__id)===String(itemId)); if(c) Object.assign(c,rec); return true; }
+    const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
+    await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items/${itemId}/fields`,{method:"PATCH",body:JSON.stringify(rec)});
+    return true; }
 };
 
 /* ===== UI ===== */
@@ -283,12 +287,18 @@ async function buildForm(){
   for(const p of ["A","B"]){ const sel=$(`#f_${p}_dev`);
     // option value = SERIAL (bound to circuit / sent to CVaaS); text = HOSTNAME.
     sel.innerHTML=`<option value="">— select device —</option>`+devs.map(d=>`<option value="${esc(d.serial)}">${esc(d.hostname)}</option>`).join("");
-    sel.onchange=async()=>{ const ints=await Data.interfaces(sel.value); $(`#f_${p}_int`).innerHTML=`<option value="">— select interface —</option>`+ints.map(i=>`<option value="${esc(i.name)}">${esc(i.name)}${i.desc?" — "+esc(i.desc):""}</option>`).join(""); }; }
+    sel.onchange=()=>loadInterfaces(p, sel.value); }
   // VLAN tag usually equals the sub-interface — mirror it until the user edits VLAN.
   for(const p of ["A","B"]){ const sub=$(`#f_${p}_sub`), vlan=$(`#f_${p}_vlan`);
     vlan.dataset.touched=""; vlan.oninput=()=>{ vlan.dataset.touched="1"; };
     sub.oninput=()=>{ if(!vlan.dataset.touched) vlan.value=sub.value; }; }
   $("#dl_customers").innerHTML=(await Data.customers()).map(c=>`<option value="${c}">`).join("");
+}
+// populate an endpoint's interface dropdown for a device, optionally pre-selecting one
+async function loadInterfaces(p, dev, selected){
+  const ints = dev ? await Data.interfaces(dev) : [];
+  $(`#f_${p}_int`).innerHTML=`<option value="">— select interface —</option>`+ints.map(i=>
+    `<option value="${esc(i.name)}"${selected&&i.name===selected?" selected":""}>${esc(i.name)}${i.desc?" — "+esc(i.desc):""}</option>`).join("");
 }
 function checkDuplicate(){
   const pairs=[["A"],["B"]].map(([p])=>({dev:$(`#f_${p}_dev`).value,int:$(`#f_${p}_int`).value,sub:$(`#f_${p}_sub`).value}));
@@ -313,23 +323,60 @@ async function renderTable(){
   const rows=CIRCUITS.filter(c=>!q||(JSON.stringify(c)+" "+devName(c.A_Device)+" "+devName(c.B_Device)).toLowerCase().includes(q));
   $("#circuitsBody").innerHTML=rows.map(c=>`<tr><td><b>${esc(c.CID)}</b></td><td>${esc(c.Customer)}</td><td>${esc(c.ServiceType)}</td>
     <td>${esc(devName(c.A_Device))} <span class="muted">${esc(c.A_Interface)}</span></td><td>${esc(devName(c.B_Device))} <span class="muted">${esc(c.B_Interface)}</span></td>
-    <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td>${statusCell(c)}</td></tr>`).join("")
-    || `<tr><td colspan="7" class="muted" style="padding:24px;text-align:center">No circuits.</td></tr>`;
+    <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td>${statusCell(c)}</td>
+    <td><button class="ghost editBtn" data-id="${esc(c.__id)}">Edit</button></td></tr>`).join("")
+    || `<tr><td colspan="8" class="muted" style="padding:24px;text-align:center">No circuits.</td></tr>`;
 }
 // inline, editable lifecycle status per circuit (changing it PATCHes SharePoint)
 function statusCell(c){ const s=STATUSES.includes(c.Status)?c.Status:"Planned";
   return `<select class="statusSel ${s}" data-id="${esc(c.__id)}" title="${esc(STATUS_HINT[s])}">`
     +STATUSES.map(x=>`<option${x===s?" selected":""}>${x}</option>`).join("")+`</select>`; }
+let EDIT_ID=null;  // null = creating a new circuit; else the SharePoint item id being edited
+// Open the modal to create a fresh circuit
+async function openNew(){
+  EDIT_ID=null; $("#modalTitle").textContent="New VPWS Circuit";
+  $("#f_cid").readOnly=false;
+  await fillForm(null);
+  $("#overlay").classList.add("open");
+}
+// Open the modal pre-filled with an existing circuit
+async function openEdit(id){
+  const c=CIRCUITS.find(x=>String(x.__id)===String(id)); if(!c) return;
+  EDIT_ID=id; $("#modalTitle").textContent="Edit Circuit — "+(c.CID||"");
+  $("#f_cid").readOnly=true;   // CID is the key; don't rename it here
+  await fillForm(c);
+  $("#overlay").classList.add("open");
+}
+// Fill (or clear, when c is null) every form field, including the device→interface cascade
+async function fillForm(c){
+  const set=(id,v)=>{ $(id).value = (v==null?"":v); };
+  set("#f_cid", c&&c.CID); set("#f_customer", c&&c.Customer); set("#f_serviceid", c&&c.ServiceId);
+  set("#f_svctype", c?c.ServiceType:""); set("#f_enni", c?c.ENNI||"No":"No");
+  const st = c&&STATUSES.includes(c.Status)?c.Status:"Planned";
+  $("#f_status").value=st; $("#statusHint").textContent=STATUS_HINT[st]||"";
+  for(const p of ["A","B"]){
+    set(`#f_${p}_dev`, c&&c[p+"_Device"]);
+    await loadInterfaces(p, c?c[p+"_Device"]:"", c?c[p+"_Interface"]:"");
+    set(`#f_${p}_sub`, c&&c[p+"_SubInt"]); set(`#f_${p}_vlan`, c&&c[p+"_VlanTag"]); set(`#f_${p}_ivlan`, c&&c[p+"_InnerVlanTag"]);
+    set(`#f_${p}_pol`, c?c[p+"_Policer"]||"":""); set(`#f_${p}_enc`, c?c[p+"_Encap"]||"match-1-and-preserve":"match-1-and-preserve");
+    set(`#f_${p}_ref`, c?c[p+"_Reflector"]||"Disabled":"Disabled"); set(`#f_${p}_lacp`, c?c[p+"_LacpPassthrough"]||"Disabled":"Disabled");
+    $(`#f_${p}_vlan`).dataset.touched = (c&&c[p+"_VlanTag"]!=null)?"1":"";  // don't auto-mirror over a real value
+  }
+  $("#dupAlarm").classList.remove("show"); $("#valMsg").textContent="";
+}
 async function save(){
   if(!validate())return; if(!checkDuplicate()&&!confirm("Duplicate interface/subinterface detected. Save anyway?"))return;
   const g=id=>$(id).value;
   const rec={CID:g("#f_cid"),Customer:g("#f_customer"),ServiceId:Number(g("#f_serviceid"))||null,ServiceType:g("#f_svctype"),ENNI:g("#f_enni"),
     A_Device:g("#f_A_dev"),A_Interface:g("#f_A_int"),A_SubInt:Number(g("#f_A_sub"))||null,A_VlanTag:Number(g("#f_A_vlan"))||null,A_InnerVlanTag:Number(g("#f_A_ivlan"))||null,A_Policer:g("#f_A_pol"),A_Encap:g("#f_A_enc"),A_Reflector:g("#f_A_ref"),A_LacpPassthrough:g("#f_A_lacp"),
     B_Device:g("#f_B_dev"),B_Interface:g("#f_B_int"),B_SubInt:Number(g("#f_B_sub"))||null,B_VlanTag:Number(g("#f_B_vlan"))||null,B_InnerVlanTag:Number(g("#f_B_ivlan"))||null,B_Policer:g("#f_B_pol"),B_Encap:g("#f_B_enc"),B_Reflector:g("#f_B_ref"),B_LacpPassthrough:g("#f_B_lacp"),
-    Status:g("#f_status")||"Planned", DeployStatus:"Pending"};
+    Status:g("#f_status")||"Planned"};
   if(rec.Status==="Disconnected") rec.DisconnectedDate=new Date().toISOString();
-  try{ await Data.saveCircuit(rec); }catch(e){ alert("Save failed: "+e.message); return; }
-  $("#overlay").classList.remove("open"); renderTable();
+  try{
+    if(EDIT_ID) await Data.updateCircuit(EDIT_ID, rec);
+    else { rec.DeployStatus="Pending"; await Data.saveCircuit(rec); }
+  }catch(e){ alert("Save failed: "+e.message); return; }
+  EDIT_ID=null; $("#overlay").classList.remove("open"); renderTable();
 }
 async function startApp(){
   $("#authGate").classList.remove("show"); $("#app").classList.add("show");
@@ -340,8 +387,8 @@ async function startApp(){
   await buildForm(); await renderTable();
 }
 function wireUi(){
-  $("#newBtn").onclick=()=>{ $("#f_status").value="Planned"; $("#statusHint").textContent=STATUS_HINT.Planned; $("#overlay").classList.add("open"); };
-  $("#cancelBtn").onclick=()=>$("#overlay").classList.remove("open");
+  $("#newBtn").onclick=openNew;
+  $("#cancelBtn").onclick=()=>{ EDIT_ID=null; $("#overlay").classList.remove("open"); };
   $("#saveBtn").onclick=save; $("#refreshBtn").onclick=renderTable; $("#search").oninput=renderTable;
   $("#signOutBtn").onclick=()=>msalInstance.logoutRedirect();
   $("#f_status").onchange=()=>{ $("#statusHint").textContent=STATUS_HINT[$("#f_status").value]||""; };
@@ -351,6 +398,11 @@ function wireUi(){
     try{ await Data.setStatus(sel.getAttribute("data-id"),sel.value); }
     catch(err){ alert("Status update failed: "+err.message); }
     renderTable();
+  });
+  // Edit button per row -> open the modal pre-filled
+  $("#circuitsBody").addEventListener("click",e=>{
+    const btn=e.target.closest("button.editBtn"); if(!btn)return;
+    openEdit(btn.getAttribute("data-id"));
   });
   ["A","B"].forEach(p=>["dev","int","sub"].forEach(f=>document.addEventListener("change",e=>{if(e.target.id===`f_${p}_${f}`)checkDuplicate();})));
   document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{if(b.disabled)return;document.querySelectorAll("nav.tabs button").forEach(x=>x.classList.remove("active"));b.classList.add("active");});
