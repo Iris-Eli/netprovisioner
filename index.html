@@ -38,6 +38,7 @@
   .toolbar input[type=search]{flex:1;padding:9px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:14px;background:var(--bg-tertiary);color:var(--text-primary)}
   button.primary{background:linear-gradient(135deg,var(--accent-primary),var(--accent-secondary));color:#fff;border:0;padding:9px 16px;border-radius:8px;font-weight:600;cursor:pointer}
   button.ghost{background:var(--bg-tertiary);border:1px solid var(--border-color);padding:9px 14px;border-radius:8px;cursor:pointer;color:var(--text-primary)}
+  button.ghost.danger{color:var(--danger);border-color:rgba(255,68,102,.5)}
   table{width:100%;border-collapse:collapse;font-size:13.5px}
   th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--border-color);white-space:nowrap}
   th{color:var(--text-tertiary);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.5px}
@@ -137,6 +138,7 @@
       <fieldset><legend>Endpoint B</legend><div class="grid" id="epB"></div></fieldset>
     </div>
     <div class="foot">
+      <button class="ghost danger" id="deleteBtn" style="display:none">Delete circuit</button>
       <span class="muted" id="valMsg"></span>
       <div style="display:flex;gap:10px"><button class="ghost" id="cancelBtn">Cancel</button><button class="primary" id="saveBtn">Save circuit</button></div>
     </div>
@@ -263,6 +265,11 @@ const Data={
   async updateCircuit(itemId, rec){ if(DEMO){ const c=DEMO_CIRCUITS.find(x=>String(x.__id)===String(itemId)); if(c) Object.assign(c,rec); return true; }
     const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
     await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items/${itemId}/fields`,{method:"PATCH",body:JSON.stringify(rec)});
+    return true; },
+  // Hard delete of a circuit row (escape hatch; normal teardown is Status=Disconnected).
+  async deleteCircuit(itemId){ if(DEMO){ const i=DEMO_CIRCUITS.findIndex(x=>String(x.__id)===String(itemId)); if(i>=0) DEMO_CIRCUITS.splice(i,1); return true; }
+    const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
+    await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items/${itemId}`,{method:"DELETE"});
     return true; }
 };
 
@@ -335,7 +342,7 @@ let EDIT_ID=null;  // null = creating a new circuit; else the SharePoint item id
 // Open the modal to create a fresh circuit
 async function openNew(){
   EDIT_ID=null; $("#modalTitle").textContent="New VPWS Circuit";
-  $("#f_cid").readOnly=false;
+  $("#f_cid").readOnly=false; $("#deleteBtn").style.display="none";
   await fillForm(null);
   $("#overlay").classList.add("open");
 }
@@ -344,6 +351,7 @@ async function openEdit(id){
   const c=CIRCUITS.find(x=>String(x.__id)===String(id)); if(!c) return;
   EDIT_ID=id; $("#modalTitle").textContent="Edit Circuit — "+(c.CID||"");
   $("#f_cid").readOnly=true;   // CID is the key; don't rename it here
+  $("#deleteBtn").style.display="inline-block";
   await fillForm(c);
   $("#overlay").classList.add("open");
 }
@@ -390,6 +398,13 @@ function wireUi(){
   $("#newBtn").onclick=openNew;
   $("#cancelBtn").onclick=()=>{ EDIT_ID=null; $("#overlay").classList.remove("open"); };
   $("#saveBtn").onclick=save; $("#refreshBtn").onclick=renderTable; $("#search").oninput=renderTable;
+  $("#deleteBtn").onclick=async()=>{
+    if(!EDIT_ID)return;
+    const cid=$("#f_cid").value||EDIT_ID;
+    if(!confirm(`Permanently DELETE circuit "${cid}" from SharePoint? This is not the normal teardown — use Status = Disconnected for that. This cannot be undone.`))return;
+    try{ await Data.deleteCircuit(EDIT_ID); }catch(e){ alert("Delete failed: "+e.message); return; }
+    EDIT_ID=null; $("#overlay").classList.remove("open"); renderTable();
+  };
   $("#signOutBtn").onclick=()=>msalInstance.logoutRedirect();
   $("#f_status").onchange=()=>{ $("#statusHint").textContent=STATUS_HINT[$("#f_status").value]||""; };
   // inline status change in the table -> PATCH SharePoint, then re-render (recolor pill)
