@@ -95,7 +95,7 @@
 
 <div id="app">
   <header class="app">
-    <div class="logo"><h1>Net Provisioner</h1><div class="version">IRIS · v0.4</div></div>
+    <div class="logo"><h1>Net Provisioner</h1><div class="version">IRIS · v0.5</div></div>
     <nav class="tabs" id="tabs">
       <button data-tab="vpws" class="active">Arista VPWS</button>
       <button data-tab="vlan" disabled title="Coming soon">VLAN</button>
@@ -318,9 +318,11 @@ function checkDuplicate(){
   const pairs=[["A"],["B"]].map(([p])=>({dev:$(`#f_${p}_dev`).value,int:$(`#f_${p}_int`).value,sub:$(`#f_${p}_sub`).value}));
   const hits=[];
   for(const np of pairs){ if(!np.dev||!np.int||!np.sub) continue;
-    for(const c of CIRCUITS) for(const e of ["A","B"])
-      if(String(c[e+"_Device"])===np.dev&&String(c[e+"_Interface"])===np.int&&String(c[e+"_SubInt"]??"")===np.sub)
-        hits.push(`${np.dev} ${np.int}.${np.sub} already used by ${c.CID}`); }
+    for(const c of CIRCUITS){
+      if(EDIT_ID && String(c.__id)===String(EDIT_ID)) continue;  // don't flag the circuit being edited as its own duplicate
+      for(const e of ["A","B"])
+        if(String(c[e+"_Device"])===np.dev&&String(c[e+"_Interface"])===np.int&&String(c[e+"_SubInt"]??"")===np.sub)
+          hits.push(`${np.dev} ${np.int}.${np.sub} already used by ${c.CID}`); } }
   const a=$("#dupAlarm"); if(hits.length){a.textContent="⚠ Duplicate: "+hits.join("; ");a.classList.add("show");}else a.classList.remove("show");
   return hits.length===0;
 }
