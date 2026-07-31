@@ -279,11 +279,14 @@ const Data={
   // Queue a deploy request. The push flow triggers on CREATE in this human-only list —
   // the connector never writes here, so its write-backs to the circuits list can't fire
   // the flow (no loop / no flood). The flow dispatches deploy-static then deletes the row.
-  async queueDeploy(cid){ if(DEMO) return true;
+  // devices: comma-separated serial(s). Empty -> the flow dispatches deploy-static
+  // --changed (NeedsDeploy-driven). Set (on a hard DELETE) -> deploy-static --devices
+  // <serials> regenerates those switch(es) without the now-deleted circuit.
+  async queueDeploy(cid, devices){ if(DEMO) return true;
     let who=""; try{ who=(msalInstance.getActiveAccount()||{}).username||""; }catch(e){}
     const id=await listId(SHAREPOINT_CONFIG.lists.deployQueue);
     await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items`,
-      {method:"POST",body:JSON.stringify({fields:{Title:String(cid||"deploy"),CID:String(cid||""),RequestedBy:who}})});
+      {method:"POST",body:JSON.stringify({fields:{Title:String(cid||"deploy"),CID:String(cid||""),RequestedBy:who,Devices:String(devices||"")}})});
     return true; },
   // Hard delete of a circuit row (escape hatch; normal teardown is Status=Disconnected).
   async deleteCircuit(itemId){ if(DEMO){ const i=DEMO_CIRCUITS.findIndex(x=>String(x.__id)===String(itemId)); if(i>=0) DEMO_CIRCUITS.splice(i,1); return true; }
@@ -433,7 +436,15 @@ function wireUi(){
     if(!EDIT_ID)return;
     const cid=$("#f_cid").value||EDIT_ID;
     if(!confirm(`Permanently DELETE circuit "${cid}" from SharePoint? This is not the normal teardown — use Status = Disconnected for that. This cannot be undone.`))return;
-    try{ await Data.deleteCircuit(EDIT_ID); }catch(e){ alert("Delete failed: "+e.message); return; }
+    // If the circuit is live somewhere, enqueue a device-targeted removal FIRST (the row
+    // is about to vanish, so --changed couldn't catch it) — then delete the row. The flow
+    // regenerates those switch(es) without the circuit. Never-deployed circuits skip this.
+    const c=CIRCUITS.find(x=>String(x.__id)===String(EDIT_ID));
+    const devs=(c&&c.LastDeployedDevices)||"";
+    try{
+      if(devs) await Data.queueDeploy(cid, devs);
+      await Data.deleteCircuit(EDIT_ID);
+    }catch(e){ alert("Delete failed: "+e.message); return; }
     EDIT_ID=null; $("#overlay").classList.remove("open"); renderTable();
   };
   $("#signOutBtn").onclick=()=>msalInstance.logoutRedirect();
