@@ -147,7 +147,7 @@
     <div class="foot">
       <button class="ghost danger" id="deleteBtn" style="display:none">Delete circuit</button>
       <span class="muted" id="valMsg"></span>
-      <div style="display:flex;gap:10px"><button class="ghost" id="cancelBtn">Cancel</button><button class="primary" id="saveBtn">Save circuit</button></div>
+      <div style="display:flex;gap:10px"><button class="ghost" id="cancelBtn">Cancel</button><button class="ghost" id="saveBtn">Save</button><button class="primary" id="saveDeployBtn">Save &amp; Deploy</button></div>
     </div>
   </div>
 </div>
@@ -161,7 +161,7 @@ const SHAREPOINT_CONFIG = {
   clientId: "f0bc695d-e675-4aa8-a114-8b7935183c30",
   tenantId: "iristransport.onmicrosoft.com",
   siteId:   "iristransport.sharepoint.com,4e195a2f-61e0-424d-a85e-6c0b3cab7267,613c2b2d-96f5-48a3-a65d-6f190ed5926c",
-  lists: { circuits:"Arista VPWS Builder", devices:"Arista Devices", interfaces:"Arista Interfaces", customers:"Customers" }
+  lists: { circuits:"Arista VPWS Builder", devices:"Arista Devices", interfaces:"Arista Interfaces", customers:"Customers", deployQueue:"Arista Deploy Queue" }
 };
 const DEMO = !SHAREPOINT_CONFIG.clientId || SHAREPOINT_CONFIG.clientId.startsWith("PUT_");
 const ENCAPS=["match-1-and-preserve","match-1-and-pop","match-2-and-preserve","match-2-and-pop-outer","match-2-and-pop-both","unmatched","unmatched-and-push","untagged-subinterface","untagged-and-push"];
@@ -260,7 +260,10 @@ const Data={
     return [...new Set([...uploaded,...used])].sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:"base"})); },
   // Change one circuit's lifecycle status; stamp/clear DisconnectedDate (the 30-day clock).
   async setStatus(itemId,status){
-    const fields={Status:status, DisconnectedDate:(status==="Disconnected"? new Date().toISOString():null)};
+    // Deployed/Disconnected are deploy actions (push / teardown) -> NeedsDeploy=Yes so the
+    // flow deploys the change; Planned = leave it alone (no push) -> NeedsDeploy=No.
+    const fields={Status:status, NeedsDeploy:(status==="Planned"?"No":"Yes"),
+      DisconnectedDate:(status==="Disconnected"? new Date().toISOString():null)};
     if(DEMO){ const c=DEMO_CIRCUITS.find(x=>x.__id===itemId); if(c){c.Status=status;c.DisconnectedDate=fields.DisconnectedDate;} return true; }
     const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
     await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items/${itemId}/fields`,{method:"PATCH",body:JSON.stringify(fields)});
@@ -272,6 +275,15 @@ const Data={
   async updateCircuit(itemId, rec){ if(DEMO){ const c=DEMO_CIRCUITS.find(x=>String(x.__id)===String(itemId)); if(c) Object.assign(c,rec); return true; }
     const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
     await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items/${itemId}/fields`,{method:"PATCH",body:JSON.stringify(rec)});
+    return true; },
+  // Queue a deploy request. The push flow triggers on CREATE in this human-only list —
+  // the connector never writes here, so its write-backs to the circuits list can't fire
+  // the flow (no loop / no flood). The flow dispatches deploy-static then deletes the row.
+  async queueDeploy(cid){ if(DEMO) return true;
+    let who=""; try{ who=(msalInstance.getActiveAccount()||{}).username||""; }catch(e){}
+    const id=await listId(SHAREPOINT_CONFIG.lists.deployQueue);
+    await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items`,
+      {method:"POST",body:JSON.stringify({fields:{Title:String(cid||"deploy"),CID:String(cid||""),RequestedBy:who}})});
     return true; },
   // Hard delete of a circuit row (escape hatch; normal teardown is Status=Disconnected).
   async deleteCircuit(itemId){ if(DEMO){ const i=DEMO_CIRCUITS.findIndex(x=>String(x.__id)===String(itemId)); if(i>=0) DEMO_CIRCUITS.splice(i,1); return true; }
@@ -381,18 +393,27 @@ async function fillForm(c){
   }
   $("#dupAlarm").classList.remove("show"); $("#valMsg").textContent="";
 }
-async function save(){
+// deploy=false ("Save"): write to SharePoint only, NeedsDeploy=No -> the push flow does
+//   NOT fire (staged/draft; nothing reaches CVaaS).
+// deploy=true ("Save & Deploy"): NeedsDeploy=Yes and Status forced live (Deployed, unless
+//   the engineer chose Disconnected to deploy a teardown) -> the flow fires -> deploy-static
+//   -> change control. The connector clears NeedsDeploy=No when it stamps, so the flow
+//   won't loop on its own write-back.
+async function save(deploy){
   if(!validate())return; if(!checkDuplicate()&&!confirm("Duplicate interface/subinterface detected. Save anyway?"))return;
   const g=id=>$(id).value;
+  const chosen=g("#f_status")||"Planned";
   const rec={CID:g("#f_cid"),Customer:g("#f_customer"),ServiceId:Number(g("#f_serviceid"))||null,ServiceType:g("#f_svctype"),ENNI:g("#f_enni"),
     A_Device:g("#f_A_dev"),A_Interface:g("#f_A_int"),A_SubInt:Number(g("#f_A_sub"))||null,A_VlanTag:Number(g("#f_A_vlan"))||null,A_InnerVlanTag:Number(g("#f_A_ivlan"))||null,A_Policer:g("#f_A_pol"),A_Encap:g("#f_A_enc"),A_Reflector:g("#f_A_ref"),A_LacpPassthrough:g("#f_A_lacp"),
     B_Device:g("#f_B_dev"),B_Interface:g("#f_B_int"),B_SubInt:Number(g("#f_B_sub"))||null,B_VlanTag:Number(g("#f_B_vlan"))||null,B_InnerVlanTag:Number(g("#f_B_ivlan"))||null,B_Policer:g("#f_B_pol"),B_Encap:g("#f_B_enc"),B_Reflector:g("#f_B_ref"),B_LacpPassthrough:g("#f_B_lacp"),
-    Status:g("#f_status")||"Planned"};
+    Status: deploy ? (chosen==="Disconnected"?"Disconnected":"Deployed") : chosen,
+    NeedsDeploy: deploy ? "Yes" : "No"};
   if(rec.Status==="Disconnected") rec.DisconnectedDate=new Date().toISOString();
   try{
     if(EDIT_ID) await Data.updateCircuit(EDIT_ID, rec);
-    else { rec.DeployStatus="Pending"; await Data.saveCircuit(rec); }
-  }catch(e){ alert("Save failed: "+e.message); return; }
+    else await Data.saveCircuit(rec);
+    if(deploy) await Data.queueDeploy(rec.CID);   // enqueue -> the flow picks it up
+  }catch(e){ alert((deploy?"Save & Deploy":"Save")+" failed: "+e.message); return; }
   EDIT_ID=null; $("#overlay").classList.remove("open"); renderTable();
 }
 async function startApp(){
@@ -406,7 +427,8 @@ async function startApp(){
 function wireUi(){
   $("#newBtn").onclick=openNew;
   $("#cancelBtn").onclick=()=>{ EDIT_ID=null; $("#overlay").classList.remove("open"); };
-  $("#saveBtn").onclick=save; $("#refreshBtn").onclick=renderTable; $("#search").oninput=renderTable;
+  $("#saveBtn").onclick=()=>save(false); $("#saveDeployBtn").onclick=()=>save(true);
+  $("#refreshBtn").onclick=renderTable; $("#search").oninput=renderTable;
   $("#deleteBtn").onclick=async()=>{
     if(!EDIT_ID)return;
     const cid=$("#f_cid").value||EDIT_ID;
@@ -419,8 +441,11 @@ function wireUi(){
   // inline status change in the table -> PATCH SharePoint, then re-render (recolor pill)
   $("#circuitsBody").addEventListener("change",async e=>{
     const sel=e.target.closest("select.statusSel"); if(!sel)return;
-    try{ await Data.setStatus(sel.getAttribute("data-id"),sel.value); }
-    catch(err){ alert("Status update failed: "+err.message); }
+    const id=sel.getAttribute("data-id"), status=sel.value;
+    try{ await Data.setStatus(id,status);
+      // Deployed/Disconnected are deploy actions -> queue it (Planned = no push).
+      if(status!=="Planned"){ const c=CIRCUITS.find(x=>String(x.__id)===String(id)); await Data.queueDeploy(c?c.CID:id); }
+    }catch(err){ alert("Status update failed: "+err.message); }
     renderTable();
   });
   // Edit button per row -> open the modal pre-filled
