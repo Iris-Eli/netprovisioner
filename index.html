@@ -436,13 +436,19 @@ function wireUi(){
     if(!EDIT_ID)return;
     const cid=$("#f_cid").value||EDIT_ID;
     if(!confirm(`Permanently DELETE circuit "${cid}" from SharePoint? This is not the normal teardown — use Status = Disconnected for that. This cannot be undone.`))return;
-    // If the circuit is live somewhere, enqueue a device-targeted removal FIRST (the row
-    // is about to vanish, so --changed couldn't catch it) — then delete the row. The flow
-    // regenerates those switch(es) without the circuit. Never-deployed circuits skip this.
+    // If the circuit is live, enqueue a device-targeted removal FIRST (the row is about to
+    // vanish, so --changed couldn't catch it) — then delete the row. The flow regenerates
+    // those switch(es) without the circuit. Use the FORM's current A/B devices (always
+    // loaded) plus any recorded LastDeployedDevices (covers a move); LastDeployedDevices
+    // alone is unreliable here — it's stamped by the connector asynchronously. Planned
+    // (never-deployed) circuits have nothing on a switch, so skip the deploy.
     const c=CIRCUITS.find(x=>String(x.__id)===String(EDIT_ID));
-    const devs=(c&&c.LastDeployedDevices)||"";
+    const devSet=new Set([$("#f_A_dev").value,$("#f_B_dev").value].filter(Boolean));
+    if(c&&c.LastDeployedDevices) c.LastDeployedDevices.split(",").forEach(d=>{d=d.trim(); if(d)devSet.add(d);});
+    const devs=[...devSet].join(",");
+    const live = $("#f_status").value!=="Planned";   // Deployed/Disconnected -> may have config
     try{
-      if(devs) await Data.queueDeploy(cid, devs);
+      if(live && devs) await Data.queueDeploy(cid, devs);
       await Data.deleteCircuit(EDIT_ID);
     }catch(e){ alert("Delete failed: "+e.message); return; }
     EDIT_ID=null; $("#overlay").classList.remove("open"); renderTable();
