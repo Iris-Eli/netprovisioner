@@ -43,6 +43,9 @@
   th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--border-color);white-space:nowrap}
   th{color:var(--text-tertiary);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.5px}
   tr:hover td{background:var(--bg-hover);cursor:pointer}
+  thead tr.filters th{padding:4px 8px 8px;text-transform:none;letter-spacing:0}
+  thead tr.filters:hover th{background:transparent}
+  thead tr.filters input{width:100%;box-sizing:border-box;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);font-size:12px;padding:4px 8px}
   /* pin Status + Edit to the right so they stay visible even if the table scrolls */
   th.stick,td.stick{position:sticky;background:var(--bg-secondary);z-index:1}
   th.stick{z-index:2}
@@ -113,11 +116,25 @@
       <div class="toolbar">
         <input id="search" type="search" placeholder="Search circuits by CID, customer, device, VLAN…"/>
         <button class="ghost" id="refreshBtn">Refresh</button>
+        <button class="ghost" id="reflectorBtn" title="Show only circuits with a reflector enabled (A or B)">Reflector report</button>
+        <button class="ghost" id="exportBtn" title="Download the current filtered view as CSV">Export CSV</button>
         <button class="primary" id="newBtn">+ New Circuit</button>
       </div>
       <div style="overflow:auto">
         <table id="circuitsTable">
-          <thead><tr><th>Circuit ID</th><th>Customer</th><th>Type</th><th>Endpoint A</th><th>Endpoint B</th><th>VLAN</th><th class="stick col-status">Status</th><th class="stick col-edit"></th></tr></thead>
+          <thead>
+            <tr><th>Circuit ID</th><th>Customer</th><th>Type</th><th>Endpoint A</th><th>Endpoint B</th><th>VLAN</th><th class="stick col-status">Status</th><th class="stick col-edit"></th></tr>
+            <tr class="filters">
+              <th><input data-col="cid" placeholder="filter…"></th>
+              <th><input data-col="customer" placeholder="filter…"></th>
+              <th><input data-col="type" placeholder="filter…"></th>
+              <th><input data-col="a" placeholder="filter…"></th>
+              <th><input data-col="b" placeholder="filter…"></th>
+              <th><input data-col="vlan" placeholder="filter…"></th>
+              <th class="stick col-status"><input data-col="status" placeholder="filter…"></th>
+              <th class="stick col-edit"></th>
+            </tr>
+          </thead>
           <tbody id="circuitsBody"></tbody>
         </table>
       </div>
@@ -347,16 +364,46 @@ function validate(){
   if(m.length){$("#valMsg").textContent="Required: "+m.join(", ");$("#valMsg").style.color="var(--danger)";return false;}
   $("#valMsg").textContent="";return true;
 }
-async function renderTable(){
-  try{ CIRCUITS=await Data.circuits(); }catch(e){ alert("Load failed: "+e.message); return; }
-  const q=$("#search").value.toLowerCase();
-  // include mapped hostnames so engineers can search by hostname, not just serial.
-  const rows=CIRCUITS.filter(c=>!q||(JSON.stringify(c)+" "+devName(c.A_Device)+" "+devName(c.B_Device)).toLowerCase().includes(q));
-  $("#circuitsBody").innerHTML=rows.map(c=>`<tr><td><b>${esc(c.CID)}</b></td><td>${esc(c.Customer)}</td><td>${esc(c.ServiceType)}</td>
+let REFLECTOR_ONLY=false, VIEW=[];   // VIEW = the currently-shown (filtered) rows, for export
+// per-column filter values (case-insensitive "contains")
+function colFilters(){ const f={}; document.querySelectorAll(".filters input[data-col]").forEach(i=>{ const v=i.value.trim().toLowerCase(); if(v) f[i.dataset.col]=v; }); return f; }
+function circuitMatches(c,q,f){
+  const has=(v,t)=>String(v==null?"":v).toLowerCase().includes(t);
+  if(q && !(JSON.stringify(c)+" "+devName(c.A_Device)+" "+devName(c.B_Device)).toLowerCase().includes(q)) return false;
+  if(f.cid && !has(c.CID,f.cid)) return false;
+  if(f.customer && !has(c.Customer,f.customer)) return false;
+  if(f.type && !has(c.ServiceType,f.type)) return false;
+  if(f.a && !has(devName(c.A_Device)+" "+c.A_Interface,f.a)) return false;
+  if(f.b && !has(devName(c.B_Device)+" "+c.B_Interface,f.b)) return false;
+  if(f.vlan && !has([c.A_VlanTag,c.A_SubInt,c.A_InnerVlanTag,c.B_VlanTag,c.B_SubInt,c.B_InnerVlanTag].join(" "),f.vlan)) return false;
+  if(f.status && !has(c.Status,f.status)) return false;
+  if(REFLECTOR_ONLY && !(c.A_Reflector==="Enabled"||c.B_Reflector==="Enabled")) return false;
+  return true;
+}
+// Re-render from the cached CIRCUITS (no re-fetch) — used by search/filters/reflector.
+function draw(){
+  const q=$("#search").value.toLowerCase(), f=colFilters();
+  VIEW=CIRCUITS.filter(c=>circuitMatches(c,q,f));
+  $("#reflectorBtn").textContent = REFLECTOR_ONLY ? `Reflector: ${VIEW.length}` : "Reflector report";
+  $("#reflectorBtn").classList.toggle("primary",REFLECTOR_ONLY);
+  $("#circuitsBody").innerHTML=VIEW.map(c=>`<tr><td><b>${esc(c.CID)}</b></td><td>${esc(c.Customer)}</td><td>${esc(c.ServiceType)}</td>
     <td>${esc(devName(c.A_Device))} <span class="muted">${esc(c.A_Interface)}</span></td><td>${esc(devName(c.B_Device))} <span class="muted">${esc(c.B_Interface)}</span></td>
     <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td class="stick col-status">${statusCell(c)}</td>
     <td class="stick col-edit"><button class="ghost editBtn" data-id="${esc(c.__id)}">Edit</button></td></tr>`).join("")
-    || `<tr><td colspan="8" class="muted" style="padding:24px;text-align:center">No circuits.</td></tr>`;
+    || `<tr><td colspan="8" class="muted" style="padding:24px;text-align:center">No circuits match.</td></tr>`;
+}
+// Download the current (filtered) view as CSV — general reporting, incl. the reflector report.
+function csvEsc(v){ v=(v==null?"":String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
+function exportCSV(){
+  const cols=[["CID","CID"],["Customer","Customer"],["ServiceType","Type"],["A_Device","A Switch"],["A_Interface","A Interface"],["A_VlanTag","A VLAN"],["A_InnerVlanTag","A Inner VLAN"],["A_Reflector","A Reflector"],["B_Device","B Switch"],["B_Interface","B Interface"],["B_VlanTag","B VLAN"],["B_InnerVlanTag","B Inner VLAN"],["B_Reflector","B Reflector"],["Status","Status"],["DeployStatus","Deploy Status"]];
+  const line=c=>cols.map(([k])=>csvEsc(k.endsWith("_Device")?devName(c[k]):c[k])).join(",");
+  const csv=[cols.map(c=>c[1]).join(",")].concat(VIEW.map(line)).join("\n");
+  const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+  a.download=(REFLECTOR_ONLY?"netprov-reflector-report":"netprov-circuits")+".csv"; a.click(); URL.revokeObjectURL(a.href);
+}
+async function renderTable(){
+  try{ CIRCUITS=await Data.circuits(); }catch(e){ alert("Load failed: "+e.message); return; }
+  draw();
 }
 // inline, editable lifecycle status per circuit (changing it PATCHes SharePoint)
 function statusCell(c){ const s=STATUSES.includes(c.Status)?c.Status:"Planned";
@@ -431,7 +478,10 @@ function wireUi(){
   $("#newBtn").onclick=openNew;
   $("#cancelBtn").onclick=()=>{ EDIT_ID=null; $("#overlay").classList.remove("open"); };
   $("#saveBtn").onclick=()=>save(false); $("#saveDeployBtn").onclick=()=>save(true);
-  $("#refreshBtn").onclick=renderTable; $("#search").oninput=renderTable;
+  $("#refreshBtn").onclick=renderTable; $("#search").oninput=draw;   // draw = filter cached data, no re-fetch
+  document.querySelectorAll(".filters input[data-col]").forEach(i=>i.addEventListener("input",draw));
+  $("#reflectorBtn").onclick=()=>{ REFLECTOR_ONLY=!REFLECTOR_ONLY; draw(); };
+  $("#exportBtn").onclick=exportCSV;
   $("#deleteBtn").onclick=async()=>{
     if(!EDIT_ID)return;
     const cid=$("#f_cid").value||EDIT_ID;
