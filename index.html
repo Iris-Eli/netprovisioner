@@ -46,6 +46,26 @@
   thead tr.filters th{padding:4px 8px 8px;text-transform:none;letter-spacing:0}
   thead tr.filters:hover th{background:transparent}
   thead tr.filters input{width:100%;box-sizing:border-box;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);font-size:12px;padding:4px 8px}
+  /* health summary chips */
+  .health{display:flex;flex-wrap:wrap;gap:8px;padding:12px 16px 4px}
+  .chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:20px;padding:5px 12px;font-size:12.5px;cursor:pointer;color:var(--text-secondary)}
+  .chip:hover{background:var(--bg-hover)}
+  .chip.active{border-color:var(--accent-primary);color:var(--text-primary)}
+  .chip b{font-size:14px;color:var(--text-primary)}
+  .chip .n{font-weight:700}
+  .chip.warn{border-color:rgba(255,68,102,.5)} .chip.warn .n{color:var(--danger)}
+  .chip.ok .n{color:#39d98a} .chip.pend .n{color:#f0a020}
+  /* failed circuit row highlight */
+  tr.failed td{background:rgba(255,68,102,.09)}
+  tr.failed td:first-child{box-shadow:inset 3px 0 0 var(--danger)}
+  /* dashboard tables */
+  .dash h3{margin:18px 0 8px;font-size:13px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px}
+  table.dash-t{width:100%;border-collapse:collapse;font-size:13px}
+  table.dash-t th,table.dash-t td{text-align:left;padding:7px 12px;border-bottom:1px solid var(--border-color);white-space:nowrap}
+  table.dash-t th{color:var(--text-tertiary);font-size:11px;text-transform:uppercase}
+  table.dash-t td.num,table.dash-t th.num{text-align:right}
+  .bar{display:inline-block;height:7px;border-radius:4px;background:var(--accent-primary);vertical-align:middle}
+  .bar-bg{display:inline-block;width:90px;height:7px;border-radius:4px;background:var(--bg-tertiary);vertical-align:middle;margin-left:8px}
   /* pin Status + Edit to the right so they stay visible even if the table scrolls */
   th.stick,td.stick{position:sticky;background:var(--bg-secondary);z-index:1}
   th.stick{z-index:2}
@@ -64,7 +84,7 @@
   select.statusSel.Disconnected{color:var(--danger);border-color:rgba(255,68,102,.5)}
   .hint{font-size:11.5px;color:var(--text-tertiary);margin-top:3px}
   .muted{color:var(--text-tertiary)}
-  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
+  .overlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.6);display:none;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
   .overlay.open{display:flex}
   .modal{background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:12px;width:min(880px,100%)}
   .modal h2{margin:0;padding:18px 22px;border-bottom:1px solid var(--border-color);font-size:17px}
@@ -118,8 +138,10 @@
         <button class="ghost" id="refreshBtn">Refresh</button>
         <button class="ghost" id="reflectorBtn" title="Show only circuits with a reflector enabled (A or B)">Reflector report</button>
         <button class="ghost" id="exportBtn" title="Download the current filtered view as CSV">Export CSV</button>
+        <button class="ghost" id="dashBtn" title="Customer and device dashboards">📊 Dashboards</button>
         <button class="primary" id="newBtn">+ New Circuit</button>
       </div>
+      <div class="health" id="healthBar"></div>
       <div style="overflow:auto">
         <table id="circuitsTable">
           <thead>
@@ -166,6 +188,14 @@
       <span class="muted" id="valMsg"></span>
       <div style="display:flex;gap:10px"><button class="ghost" id="cancelBtn">Cancel</button><button class="ghost" id="saveBtn">Save</button><button class="primary" id="saveDeployBtn">Save &amp; Deploy</button></div>
     </div>
+  </div>
+</div>
+<div class="overlay" id="dashOverlay">
+  <div class="modal">
+    <h2>Dashboards</h2>
+    <div class="body" id="dashBody"></div>
+    <div class="foot"><span class="muted" id="dashMsg"></span>
+      <div style="display:flex;gap:10px"><button class="ghost" id="dashClose">Close</button></div></div>
   </div>
 </div>
 <datalist id="dl_customers"></datalist>
@@ -365,6 +395,8 @@ function validate(){
   $("#valMsg").textContent="";return true;
 }
 let REFLECTOR_ONLY=false, VIEW=[];   // VIEW = the currently-shown (filtered) rows, for export
+let HEALTH=null, IFACE_ALL=null;     // HEALTH = {field,value} chip filter; IFACE_ALL = cached interfaces
+const sameFilter=(a,b)=> (!a&&!b) || (a&&b&&a.field===b.field&&a.value===b.value);
 // per-column filter values (case-insensitive "contains")
 function colFilters(){ const f={}; document.querySelectorAll(".filters input[data-col]").forEach(i=>{ const v=i.value.trim().toLowerCase(); if(v) f[i.dataset.col]=v; }); return f; }
 function circuitMatches(c,q,f){
@@ -378,7 +410,23 @@ function circuitMatches(c,q,f){
   if(f.vlan && !has([c.A_VlanTag,c.A_SubInt,c.A_InnerVlanTag,c.B_VlanTag,c.B_SubInt,c.B_InnerVlanTag].join(" "),f.vlan)) return false;
   if(f.status && !has(c.Status,f.status)) return false;
   if(REFLECTOR_ONLY && !(c.A_Reflector==="Enabled"||c.B_Reflector==="Enabled")) return false;
+  if(HEALTH && (c[HEALTH.field]||"")!==HEALTH.value) return false;   // health chip filter
   return true;
+}
+// Clickable summary chips: Status (Deployed/Planned/Disconnected) + DeployStatus (Pending/Failed).
+function renderHealthBar(){
+  const n=p=>CIRCUITS.filter(p).length;
+  const chips=[
+    {label:"All",n:CIRCUITS.length,cls:"",f:null},
+    {label:"Deployed",n:n(c=>c.Status==="Deployed"),cls:"ok",f:{field:"Status",value:"Deployed"}},
+    {label:"Planned",n:n(c=>c.Status==="Planned"),cls:"",f:{field:"Status",value:"Planned"}},
+    {label:"Disconnected",n:n(c=>c.Status==="Disconnected"),cls:"",f:{field:"Status",value:"Disconnected"}},
+    {label:"Pending push",n:n(c=>c.DeployStatus==="Pending"),cls:"pend",f:{field:"DeployStatus",value:"Pending"}},
+    {label:"Failed",n:n(c=>c.DeployStatus==="Failed"),cls:"warn",f:{field:"DeployStatus",value:"Failed"}},
+  ];
+  $("#healthBar").innerHTML=chips.map((ch,i)=>
+    `<span class="chip ${ch.cls} ${sameFilter(HEALTH,ch.f)?'active':''}" data-i="${i}"><span>${ch.label}</span><span class="n">${ch.n}</span></span>`).join("");
+  $("#healthBar")._chips=chips;
 }
 // Re-render from the cached CIRCUITS (no re-fetch) — used by search/filters/reflector.
 function draw(){
@@ -386,10 +434,13 @@ function draw(){
   VIEW=CIRCUITS.filter(c=>circuitMatches(c,q,f));
   $("#reflectorBtn").textContent = REFLECTOR_ONLY ? `Reflector: ${VIEW.length}` : "Reflector report";
   $("#reflectorBtn").classList.toggle("primary",REFLECTOR_ONLY);
-  $("#circuitsBody").innerHTML=VIEW.map(c=>`<tr><td><b>${esc(c.CID)}</b></td><td>${esc(c.Customer)}</td><td>${esc(c.ServiceType)}</td>
+  renderHealthBar();
+  $("#circuitsBody").innerHTML=VIEW.map(c=>{
+    const failed=c.DeployStatus==="Failed";
+    return `<tr class="${failed?'failed':''}"${failed?` title="${esc(c.DeployStatusDetail||'Deploy failed')}"`:''}><td><b>${esc(c.CID)}</b></td><td>${esc(c.Customer)}</td><td>${esc(c.ServiceType)}</td>
     <td>${esc(devName(c.A_Device))} <span class="muted">${esc(c.A_Interface)}</span></td><td>${esc(devName(c.B_Device))} <span class="muted">${esc(c.B_Interface)}</span></td>
     <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td class="stick col-status">${statusCell(c)}</td>
-    <td class="stick col-edit"><button class="ghost editBtn" data-id="${esc(c.__id)}">Edit</button></td></tr>`).join("")
+    <td class="stick col-edit"><button class="ghost editBtn" data-id="${esc(c.__id)}">Edit</button></td></tr>`;}).join("")
     || `<tr><td colspan="8" class="muted" style="padding:24px;text-align:center">No circuits match.</td></tr>`;
 }
 // Download the current (filtered) view as CSV — general reporting, incl. the reflector report.
@@ -400,6 +451,32 @@ function exportCSV(){
   const csv=[cols.map(c=>c[1]).join(",")].concat(VIEW.map(line)).join("\n");
   const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
   a.download=(REFLECTOR_ONLY?"netprov-reflector-report":"netprov-circuits")+".csv"; a.click(); URL.revokeObjectURL(a.href);
+}
+// Customer rollup + switch utilization, computed from the cached circuits (+ the
+// Interfaces list for used/total). Read-only overlay.
+async function openDashboards(){
+  $("#dashBody").innerHTML='<div class="muted" style="padding:20px">Loading…</div>';
+  $("#dashOverlay").classList.add("open");
+  const byCust={};
+  CIRCUITS.forEach(c=>{ const k=c.Customer||"(none)"; const o=byCust[k]||(byCust[k]={t:0,dep:0,plan:0,disc:0,enni:0,types:new Set()});
+    o.t++; if(c.Status==="Deployed")o.dep++; else if(c.Status==="Planned")o.plan++; else if(c.Status==="Disconnected")o.disc++;
+    if(c.ENNI==="Yes")o.enni++; if(c.ServiceType)o.types.add(c.ServiceType); });
+  const custRows=Object.entries(byCust).sort((a,b)=>b[1].t-a[1].t).map(([k,o])=>
+    `<tr><td>${esc(k)}</td><td class="num">${o.t}</td><td class="num">${o.dep}</td><td class="num">${o.plan}</td><td class="num">${o.disc}</td><td class="num">${o.enni}</td><td>${esc([...o.types].sort().join(", "))}</td></tr>`).join("");
+  const byDev={},usedIf={};
+  CIRCUITS.forEach(c=>["A","B"].forEach(p=>{ const d=c[p+"_Device"],i=c[p+"_Interface"]; if(d){ byDev[d]=(byDev[d]||0)+1; if(i)(usedIf[d]||(usedIf[d]=new Set())).add(i);} }));
+  const totals={};
+  try{ if(!IFACE_ALL) IFACE_ALL=await listItems(SHAREPOINT_CONFIG.lists.interfaces);
+       IFACE_ALL.forEach(f=>{ if(f.Device) totals[f.Device]=(totals[f.Device]||0)+1; }); }catch(e){ /* interfaces unavailable */ }
+  const devRows=Object.keys(byDev).sort((a,b)=>byDev[b]-byDev[a]).map(d=>{
+    const used=(usedIf[d]||new Set()).size, tot=totals[d]||0, pct=tot?Math.round(used/tot*100):0, w=tot?Math.max(3,Math.round(used/tot*90)):0;
+    return `<tr><td>${esc(devName(d))}</td><td class="num">${byDev[d]}</td><td class="num">${used}${tot?" / "+tot:""}</td><td>${tot?`<span class="bar-bg"><span class="bar" style="width:${w}px"></span></span> ${pct}%`:'<span class="muted">—</span>'}</td></tr>`;
+  }).join("");
+  $("#dashBody").innerHTML=`<div class="dash">
+    <h3>Customers (${Object.keys(byCust).length})</h3>
+    <table class="dash-t"><thead><tr><th>Customer</th><th class="num">Circuits</th><th class="num">Deployed</th><th class="num">Planned</th><th class="num">Disc.</th><th class="num">ENNI</th><th>Service types</th></tr></thead><tbody>${custRows}</tbody></table>
+    <h3>Switch utilization (${Object.keys(byDev).length})</h3>
+    <table class="dash-t"><thead><tr><th>Switch</th><th class="num">Circuits</th><th class="num">Interfaces used</th><th>Utilization</th></tr></thead><tbody>${devRows}</tbody></table></div>`;
 }
 async function renderTable(){
   try{ CIRCUITS=await Data.circuits(); }catch(e){ alert("Load failed: "+e.message); return; }
@@ -482,6 +559,10 @@ function wireUi(){
   document.querySelectorAll(".filters input[data-col]").forEach(i=>i.addEventListener("input",draw));
   $("#reflectorBtn").onclick=()=>{ REFLECTOR_ONLY=!REFLECTOR_ONLY; draw(); };
   $("#exportBtn").onclick=exportCSV;
+  $("#dashBtn").onclick=openDashboards; $("#dashClose").onclick=()=>$("#dashOverlay").classList.remove("open");
+  $("#healthBar").addEventListener("click",e=>{ const chip=e.target.closest(".chip"); if(!chip)return;
+    const f=($("#healthBar")._chips||[])[+chip.dataset.i]?.f||null;
+    HEALTH=sameFilter(HEALTH,f)?null:f; draw(); });
   $("#deleteBtn").onclick=async()=>{
     if(!EDIT_ID)return;
     const cid=$("#f_cid").value||EDIT_ID;
