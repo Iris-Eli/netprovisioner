@@ -235,16 +235,38 @@ function initMsal(){
   });
 }
 async function getToken(){
-  if(_token && Date.now()<_tokenExp-60000) return _token;
+  if(_token && Date.now()<_tokenExp-300000) return _token;   // refresh 5 min early
   const acct=msalInstance.getActiveAccount()||msalInstance.getAllAccounts()[0];
-  const r=await msalInstance.acquireTokenSilent({...loginRequest, account:acct});
-  _token=r.accessToken; _tokenExp=Date.now()+3500000; return _token;
+  try{
+    const r=await msalInstance.acquireTokenSilent({...loginRequest, account:acct});
+    _token=r.accessToken;
+    // Use the token's real expiry (fall back to ~58 min) so we renew on time, not on a guess.
+    _tokenExp=(r.expiresOn instanceof Date)?r.expiresOn.getTime():Date.now()+3500000;
+    return _token;
+  }catch(e){
+    // Silent renew failed — access token expired AND the SPA refresh token aged out (~24h),
+    // or the hidden-iframe renew was blocked by third-party-cookie policy. Previously this
+    // threw and the only fix was a manual sign-out/in. Instead, re-auth interactively:
+    // a redirect returns seamlessly when the user still has a live Microsoft session.
+    _token=null; _tokenExp=0;
+    console.warn("silent token renew failed ("+(e&&e.errorCode||e)+") — re-authenticating");
+    await msalInstance.acquireTokenRedirect({...loginRequest, account:acct});
+    // Page navigates away here; execution does not continue past this point.
+    return new Promise(()=>{});   // never resolves; avoids a spurious downstream error pre-redirect
+  }
 }
 
 /* ===== GRAPH ===== */
 async function graph(endpoint,opts={}){
   const t=await getToken();
-  const r=await fetch("https://graph.microsoft.com/v1.0"+endpoint,{...opts,headers:{Authorization:"Bearer "+t,"Content-Type":"application/json",...(opts.headers||{})}});
+  let r=await fetch("https://graph.microsoft.com/v1.0"+endpoint,{...opts,headers:{Authorization:"Bearer "+t,"Content-Type":"application/json",...(opts.headers||{})}});
+  if(r.status===401){
+    // Token rejected server-side though it looked valid locally — force a fresh one
+    // (getToken re-auths via redirect if the silent renew also fails) and retry ONCE.
+    _token=null; _tokenExp=0;
+    const t2=await getToken();
+    r=await fetch("https://graph.microsoft.com/v1.0"+endpoint,{...opts,headers:{Authorization:"Bearer "+t2,"Content-Type":"application/json",...(opts.headers||{})}});
+  }
   if(!r.ok) throw new Error("Graph "+r.status+": "+await r.text());
   return r.status===204?null:r.json();
 }
