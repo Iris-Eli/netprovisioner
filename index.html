@@ -99,6 +99,21 @@
   .modal .foot{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 22px;border-top:1px solid var(--border-color)}
   .alarm{background:rgba(255,68,102,.12);border:1px solid rgba(255,68,102,.4);color:var(--danger);padding:10px 12px;border-radius:8px;font-size:13px;display:none}
   .alarm.show{display:block}
+  .modal.wide{width:min(1500px,100%)}
+  .bulkbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .bulkwrap{overflow:auto;max-height:60vh;border:1px solid var(--border-color);border-radius:8px}
+  table.bulk{border-collapse:separate;border-spacing:0;font-size:12.5px;white-space:nowrap}
+  table.bulk th,table.bulk td{border-bottom:1px solid var(--border-color);border-right:1px solid var(--border-color);padding:3px 5px}
+  table.bulk thead th{position:sticky;top:0;background:var(--bg-tertiary);z-index:2;font-size:11.5px;font-weight:600;color:var(--text-secondary)}
+  table.bulk th.rownum,table.bulk td.rownum{position:sticky;left:0;background:var(--bg-tertiary);z-index:1;text-align:center;color:var(--text-secondary)}
+  table.bulk td.epA{border-left:2px solid var(--accent-primary)}
+  table.bulk td.epB{border-left:2px solid var(--accent-secondary)}
+  table.bulk input,table.bulk select{width:100%;min-width:70px;padding:5px 6px;border:1px solid var(--border-color);border-radius:6px;font-size:12.5px;background:var(--bg-secondary);color:var(--text-primary)}
+  table.bulk input.wcid{min-width:200px}
+  table.bulk input.num{min-width:58px;text-align:right}
+  table.bulk tr.badrow td.rownum{background:rgba(255,68,102,.35);color:#fff}
+  table.bulk td.err input,table.bulk td.err select{border-color:var(--danger)}
+  .bulkdel{cursor:pointer;border:none;background:transparent;color:var(--danger);font-size:15px;line-height:1}
   .banner{background:rgba(255,170,0,.1);border:1px solid rgba(255,170,0,.35);color:var(--warning);padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
   code{background:var(--bg-tertiary);padding:1px 6px;border-radius:5px;font-size:12px}
   #authGate{position:fixed;inset:0;background:var(--bg-primary);display:none;align-items:center;justify-content:center;flex-direction:column;gap:18px;text-align:center}
@@ -139,6 +154,7 @@
         <button class="ghost" id="reflectorBtn" title="Show only circuits with a reflector enabled (A or B)">Reflector report</button>
         <button class="ghost" id="exportBtn" title="Download the current filtered view as CSV">Export CSV</button>
         <button class="ghost" id="dashBtn" title="Customer and device dashboards">📊 Dashboards</button>
+        <button class="ghost" id="bulkBtn" title="Add many circuits at once (grid or CSV), one Save &amp; Deploy">⊞ Bulk Add</button>
         <button class="primary" id="newBtn">+ New Circuit</button>
       </div>
       <div class="health" id="healthBar"></div>
@@ -196,6 +212,30 @@
     <div class="body" id="dashBody"></div>
     <div class="foot"><span class="muted" id="dashMsg"></span>
       <div style="display:flex;gap:10px"><button class="ghost" id="dashClose">Close</button></div></div>
+  </div>
+</div>
+<div class="overlay" id="bulkOverlay">
+  <div class="modal wide">
+    <h2>Bulk Add Circuits</h2>
+    <div class="body">
+      <div class="alarm" id="bulkAlarm"></div>
+      <div class="bulkbar">
+        <button class="ghost" id="bulkAddRow">+ Add row</button>
+        <button class="ghost" id="bulkImportBtn" title="Populate the grid from a CSV file">⬆ Import CSV</button>
+        <button class="ghost" id="bulkTemplateBtn" title="Download a blank CSV with the correct columns">⬇ CSV template</button>
+        <button class="ghost" id="bulkClear">Clear</button>
+        <input type="file" id="bulkFile" accept=".csv,text/csv" style="display:none"/>
+        <span class="muted" style="font-size:12px">Device accepts hostname or serial · VLAN mirrors sub-interface · one Save &amp; Deploy = one change control</span>
+      </div>
+      <div class="bulkwrap"><table class="bulk" id="bulkTable"><thead></thead><tbody></tbody></table></div>
+    </div>
+    <div class="foot">
+      <span class="muted" id="bulkMsg"></span>
+      <div style="display:flex;gap:10px">
+        <button class="ghost" id="bulkCancel">Cancel</button>
+        <button class="primary" id="bulkSaveDeploy">Save &amp; Deploy All</button>
+      </div>
+    </div>
   </div>
 </div>
 <datalist id="dl_customers"></datalist>
@@ -340,6 +380,19 @@ const Data={
   async saveCircuit(rec){ if(DEMO){ DEMO_CIRCUITS.push({...rec, __id:"d"+(DEMO_CIRCUITS.length+1)}); return true; }
     const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
     await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items`,{method:"POST",body:JSON.stringify({fields:rec})});
+    _ifaceCache=null; return true; },
+  // Create many circuit rows in one shot via the Graph $batch endpoint (≤20 requests each,
+  // so it's chunked). Used by Bulk Add — all rows land, then ONE deploy is queued.
+  async saveCircuitsBatch(recs){ if(DEMO){ recs.forEach(r=>DEMO_CIRCUITS.push({...r,__id:"d"+(DEMO_CIRCUITS.length+1)})); return true; }
+    const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
+    const url=`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items`;
+    for(let i=0;i<recs.length;i+=20){
+      const chunk=recs.slice(i,i+20);
+      const requests=chunk.map((r,j)=>({id:String(j+1),method:"POST",url,headers:{"Content-Type":"application/json"},body:{fields:r}}));
+      const resp=await graph("/$batch",{method:"POST",body:JSON.stringify({requests})});
+      const fails=(resp.responses||[]).filter(x=>x.status>=400);
+      if(fails.length){ const e0=fails[0].body&&fails[0].body.error; throw new Error(`${fails.length} of ${chunk.length} row(s) failed (e.g. "${(e0&&e0.message)||fails[0].status}")`); }
+    }
     _ifaceCache=null; return true; },
   async updateCircuit(itemId, rec){ if(DEMO){ const c=DEMO_CIRCUITS.find(x=>String(x.__id)===String(itemId)); if(c) Object.assign(c,rec); return true; }
     const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
@@ -565,6 +618,209 @@ async function save(deploy){
   }catch(e){ alert((deploy?"Save & Deploy":"Save")+" failed: "+e.message); return; }
   EDIT_ID=null; $("#overlay").classList.remove("open"); renderTable();
 }
+/* ===== BULK ADD (grid + CSV) — many circuits, one Save & Deploy ===== */
+// Column model drives the grid, the CSV template, and validation. `type` picks the editor.
+const BULK_COLS=[
+  {k:"CID",label:"Circuit ID",type:"text",req:1,cls:"wcid"},
+  {k:"Customer",label:"Customer",type:"customer",req:1},
+  {k:"ServiceId",label:"Svc ID",type:"num",req:1},
+  {k:"ServiceType",label:"Type",type:"select",opts:["","EBH","ETH","MGMT","ENT","DIA"],req:1},
+  {k:"ENNI",label:"ENNI",type:"select",opts:["No","Yes"],def:"No"},
+  {k:"A_Device",label:"A Device",type:"device",ep:"A",req:1},
+  {k:"A_Interface",label:"A Interface",type:"iface",ep:"A",req:1},
+  {k:"A_SubInt",label:"A Sub",type:"num",req:1,mirror:"A_VlanTag"},
+  {k:"A_VlanTag",label:"A VLAN",type:"num",req:1},
+  {k:"A_InnerVlanTag",label:"A Inner",type:"num"},
+  {k:"A_Policer",label:"A Policer",type:"select",opts:["",...POLICERS]},
+  {k:"A_Encap",label:"A Encap",type:"select",opts:ENCAPS,def:"match-1-and-preserve"},
+  {k:"A_Reflector",label:"A Refl",type:"select",opts:["Disabled","Enabled"],def:"Disabled"},
+  {k:"A_LacpPassthrough",label:"A LACP",type:"select",opts:["Disabled","Enabled"],def:"Disabled"},
+  {k:"B_Device",label:"B Device",type:"device",ep:"B",req:1},
+  {k:"B_Interface",label:"B Interface",type:"iface",ep:"B",req:1},
+  {k:"B_SubInt",label:"B Sub",type:"num",req:1,mirror:"B_VlanTag"},
+  {k:"B_VlanTag",label:"B VLAN",type:"num",req:1},
+  {k:"B_InnerVlanTag",label:"B Inner",type:"num"},
+  {k:"B_Policer",label:"B Policer",type:"select",opts:["",...POLICERS]},
+  {k:"B_Encap",label:"B Encap",type:"select",opts:ENCAPS,def:"match-1-and-preserve"},
+  {k:"B_Reflector",label:"B Refl",type:"select",opts:["Disabled","Enabled"],def:"Disabled"},
+  {k:"B_LacpPassthrough",label:"B LACP",type:"select",opts:["Disabled","Enabled"],def:"Disabled"},
+];
+const BULK_REQ=BULK_COLS.filter(c=>c.req).map(c=>c.k);
+let BULK_ROWS=[], BULK_DEVS=[], HOST2SERIAL={}, _bulkIface={};
+const bulkBlank=()=>{ const r={}; BULK_COLS.forEach(c=>r[c.k]=c.def||""); return r; };
+async function openBulk(){
+  BULK_DEVS=await Data.devices();
+  DEVMAP={}; HOST2SERIAL={};
+  BULK_DEVS.forEach(d=>{ DEVMAP[d.serial]=d.hostname; HOST2SERIAL[d.hostname.toLowerCase()]=d.serial; HOST2SERIAL[d.serial.toLowerCase()]=d.serial; });
+  if(!$("#dl_customers").children.length){ try{ $("#dl_customers").innerHTML=(await Data.customers()).map(c=>`<option value="${esc(c)}">`).join(""); }catch(e){} }
+  if(!BULK_ROWS.length) BULK_ROWS=[bulkBlank(),bulkBlank(),bulkBlank()];
+  await bulkPreloadIfaces();
+  renderBulk();
+  $("#bulkOverlay").classList.add("open");
+}
+// Pre-fetch interfaces for every device referenced by a row (deduped, cached) so the
+// interface dropdowns render populated.
+async function bulkPreloadIfaces(){
+  const need=[...new Set(BULK_ROWS.flatMap(r=>[r.A_Device,r.B_Device]).filter(Boolean))].filter(d=>!_bulkIface[d]);
+  for(const d of need){ try{ _bulkIface[d]=await Data.interfaces(d); }catch(e){ _bulkIface[d]=[]; } }
+}
+function bulkCell(col,ri,row){
+  const v=row[col.k]==null?"":row[col.k];
+  const dataAttr=`data-r="${ri}" data-k="${col.k}"`;
+  if(col.type==="select"){
+    return `<select ${dataAttr}>`+col.opts.map(o=>`<option value="${esc(o)}"${String(o)===String(v)?" selected":""}>${esc(o===""?"—":o)}</option>`).join("")+`</select>`;
+  }
+  if(col.type==="device"){
+    return `<select ${dataAttr}><option value="">— device —</option>`+BULK_DEVS.map(d=>`<option value="${esc(d.serial)}"${d.serial===v?" selected":""}>${esc(d.hostname)}</option>`).join("")+`</select>`;
+  }
+  if(col.type==="iface"){
+    const dev=row[col.ep+"_Device"]; const ints=(dev&&_bulkIface[dev])||[];
+    const known=ints.some(i=>i.name===v);
+    return `<select ${dataAttr}><option value="">${dev?"— interface —":"— device first —"}</option>`
+      +(v&&!known?`<option value="${esc(v)}" selected>${esc(v)} (?)</option>`:"")
+      +ints.map(i=>`<option value="${esc(i.name)}"${i.name===v?" selected":""}>${esc(i.name)}${i.desc?" — "+esc(i.desc):""}</option>`).join("")+`</select>`;
+  }
+  if(col.type==="customer") return `<input ${dataAttr} list="dl_customers" value="${esc(v)}" autocomplete="off"/>`;
+  if(col.type==="num") return `<input ${dataAttr} class="num" type="number" value="${esc(v)}"/>`;
+  return `<input ${dataAttr} class="${col.cls||""}" value="${esc(v)}"/>`;
+}
+function renderBulk(){
+  const head=`<tr><th class="rownum">#</th>`+BULK_COLS.map(c=>`<th>${esc(c.label)}${c.req?' <span class="req">*</span>':""}</th>`).join("")+`<th></th></tr>`;
+  $("#bulkTable thead").innerHTML=head;
+  const cls=k=>k==="A_Device"?"epA":(k==="B_Device"?"epB":"");
+  $("#bulkTable tbody").innerHTML=BULK_ROWS.map((row,ri)=>
+    `<tr data-row="${ri}"><td class="rownum">${ri+1}</td>`
+    +BULK_COLS.map(c=>`<td class="${cls(c.k)}">${bulkCell(c,ri,row)}</td>`).join("")
+    +`<td><button class="bulkdel" data-del="${ri}" title="Remove row">✕</button></td></tr>`).join("");
+  $("#bulkMsg").textContent=`${BULK_ROWS.length} row(s)`;
+}
+// Model updates on edit (no full re-render → keeps text focus); device change reloads that
+// row's interface options; sub-int mirrors into VLAN until VLAN is typed.
+async function onBulkEdit(e){
+  const el=e.target.closest("[data-r]"); if(!el) return;
+  const ri=+el.dataset.r, k=el.dataset.k, col=BULK_COLS.find(c=>c.k===k);
+  BULK_ROWS[ri][k]=el.value;
+  if(col.type==="device"){
+    if(el.value && !_bulkIface[el.value]){ try{ _bulkIface[el.value]=await Data.interfaces(el.value); }catch(err){ _bulkIface[el.value]=[]; } }
+    BULK_ROWS[ri][col.ep+"_Interface"]="";   // clear stale interface when device changes
+    renderBulk();
+  } else if(col.mirror && e.type==="input"){
+    if(!BULK_ROWS[ri]["_t_"+col.mirror]){ BULK_ROWS[ri][col.mirror]=el.value; const m=$(`#bulkTable [data-r="${ri}"][data-k="${col.mirror}"]`); if(m) m.value=el.value; }
+  } else if(col.mirror===undefined && (k.endsWith("_VlanTag")) && e.type==="input"){
+    BULK_ROWS[ri]["_t_"+k]="1";   // VLAN typed → stop mirroring
+  }
+}
+function bulkNum(v){ if(v===""||v==null) return null; const n=Number(v); return isNaN(n)?null:n; }
+function bulkToRec(row){
+  const r={CID:(row.CID||"").trim(),Customer:(row.Customer||"").trim(),ServiceId:bulkNum(row.ServiceId),ServiceType:row.ServiceType,ENNI:row.ENNI||"No",Status:"Deployed",NeedsDeploy:"Yes"};
+  for(const p of ["A","B"]){
+    r[p+"_Device"]=row[p+"_Device"]; r[p+"_Interface"]=row[p+"_Interface"];
+    r[p+"_SubInt"]=bulkNum(row[p+"_SubInt"]); r[p+"_VlanTag"]=bulkNum(row[p+"_VlanTag"]); r[p+"_InnerVlanTag"]=bulkNum(row[p+"_InnerVlanTag"]);
+    r[p+"_Policer"]=row[p+"_Policer"]||""; r[p+"_Encap"]=row[p+"_Encap"]||"match-1-and-preserve";
+    r[p+"_Reflector"]=row[p+"_Reflector"]||"Disabled"; r[p+"_LacpPassthrough"]=row[p+"_LacpPassthrough"]||"Disabled";
+  }
+  return r;
+}
+// Validate every row: required fields, and duplicate device+interface+sub (within the batch
+// AND against existing circuits) + duplicate CID. Returns {ok, errs:[{ri,fields:Set,msg}]}.
+function validateBulk(){
+  const errs=[]; const seenIf=new Map(), seenCid=new Map();
+  // existing usage
+  const existIf=new Set(), existCid=new Set();
+  CIRCUITS.forEach(c=>{ if(c.CID)existCid.add(String(c.CID).toLowerCase()); ["A","B"].forEach(e=>{ if(c[e+"_Device"]&&c[e+"_Interface"]&&c[e+"_SubInt"]!=null) existIf.add(`${c[e+"_Device"]}|${c[e+"_Interface"]}|${c[e+"_SubInt"]}`); }); });
+  BULK_ROWS.forEach((row,ri)=>{
+    const bad=new Set(), msgs=[];
+    if(rowIsBlank(row)) return; // skip a wholly-blank row
+    BULK_REQ.forEach(k=>{ if(String(row[k]==null?"":row[k]).trim()==="") bad.add(k); });
+    if(bad.size) msgs.push("missing "+[...bad].length+" required");
+    const cid=String(row.CID||"").trim().toLowerCase();
+    if(cid){ if(existCid.has(cid)) {bad.add("CID"); msgs.push("CID already exists");}
+      if(seenCid.has(cid)){ bad.add("CID"); msgs.push("duplicate CID in batch (row "+(seenCid.get(cid)+1)+")"); } else seenCid.set(cid,ri); }
+    for(const p of ["A","B"]){ const d=row[p+"_Device"],i=row[p+"_Interface"],s=row[p+"_SubInt"];
+      if(d&&i&&String(s).trim()!==""){ const key=`${d}|${i}|${s}`;
+        if(existIf.has(key)){ bad.add(p+"_Interface"); msgs.push(`${devName(d)} ${i}.${s} already used`); }
+        if(seenIf.has(key)){ bad.add(p+"_Interface"); msgs.push(`${devName(d)} ${i}.${s} reused (row ${seenIf.get(key)+1})`); } else seenIf.set(key,ri); } }
+    if(bad.size||msgs.length) errs.push({ri,fields:bad,msgs});
+  });
+  return {ok:errs.length===0, errs};
+}
+function paintBulkErrors(errs){
+  document.querySelectorAll("#bulkTable tr.badrow").forEach(t=>t.classList.remove("badrow"));
+  document.querySelectorAll("#bulkTable td.err").forEach(t=>t.classList.remove("err"));
+  errs.forEach(er=>{ const tr=$(`#bulkTable tr[data-row="${er.ri}"]`); if(!tr)return; tr.classList.add("badrow");
+    er.fields.forEach(k=>{ const cell=tr.querySelector(`[data-k="${k}"]`); if(cell&&cell.closest("td")) cell.closest("td").classList.add("err"); }); });
+}
+const rowIsBlank=r=>BULK_COLS.every(c=>String(r[c.k]==null?"":r[c.k]).trim()==="");
+function nonBlankBulkRows(){ return BULK_ROWS.filter(r=>!rowIsBlank(r)); }
+async function saveBulkAll(){
+  const rows=nonBlankBulkRows();
+  const a=$("#bulkAlarm");
+  if(!rows.length){ a.textContent="Nothing to save — all rows are blank."; a.classList.add("show"); return; }
+  const {ok,errs}=validateBulk(); paintBulkErrors(errs);
+  if(!ok){ a.innerHTML="⚠ Fix "+errs.length+" row(s): "+errs.slice(0,4).map(e=>"row "+(e.ri+1)+" ("+e.msgs.join("; ")+")").join(" · ")+(errs.length>4?" …":""); a.classList.add("show"); return; }
+  a.classList.remove("show");
+  const recs=rows.map(bulkToRec);
+  const btn=$("#bulkSaveDeploy"); btn.disabled=true; const orig=btn.textContent; btn.textContent="Saving "+recs.length+"…";
+  try{
+    await Data.saveCircuitsBatch(recs);
+    // ONE deploy request for the whole batch: deploy-static --changed picks up every
+    // NeedsDeploy=Yes circuit in a single change control (no per-row flood).
+    await Data.queueDeploy(`bulk: ${recs.length} circuit(s)`);
+  }catch(e){ a.textContent="Save & Deploy failed: "+e.message; a.classList.add("show"); btn.disabled=false; btn.textContent=orig; return; }
+  btn.disabled=false; btn.textContent=orig;
+  BULK_ROWS=[]; $("#bulkOverlay").classList.remove("open");
+  alert(`${recs.length} circuit(s) saved and queued — deploying in one change control.`);
+  renderTable();
+}
+// --- CSV ---
+function bulkTemplate(){
+  const header=BULK_COLS.map(c=>c.k).join(",");
+  const blob=new Blob([header+"\n"],{type:"text/csv"});
+  const url=URL.createObjectURL(blob); const a=document.createElement("a");
+  a.href=url; a.download="netprov_bulk_template.csv"; a.click(); URL.revokeObjectURL(url);
+}
+// Minimal RFC-4180-ish CSV parse (handles quotes, commas, CRLF).
+function parseCSV(text){
+  const rows=[]; let row=[],cur="",q=false;
+  for(let i=0;i<text.length;i++){ const ch=text[i];
+    if(q){ if(ch==='"'){ if(text[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=ch; }
+    else if(ch==='"') q=true;
+    else if(ch===","){ row.push(cur); cur=""; }
+    else if(ch==="\n"){ row.push(cur); rows.push(row); row=[]; cur=""; }
+    else if(ch==="\r"){ /* skip */ }
+    else cur+=ch; }
+  if(cur!==""||row.length){ row.push(cur); rows.push(row); }
+  return rows.filter(r=>r.some(c=>c.trim()!==""));
+}
+async function bulkImportCSV(file){
+  const text=await file.text(); const grid=parseCSV(text);
+  if(!grid.length){ alert("CSV is empty."); return; }
+  const header=grid[0].map(h=>h.trim());
+  const keyByHdr=header.map(h=>{ const lc=h.toLowerCase(); const col=BULK_COLS.find(c=>c.k.toLowerCase()===lc||c.label.toLowerCase()===lc); return col?col.k:null; });
+  if(!keyByHdr.some(Boolean)){ alert("No recognized column headers. Use the CSV template."); return; }
+  const rows=grid.slice(1).map(cells=>{ const r=bulkBlank();
+    keyByHdr.forEach((k,ci)=>{ if(k) r[k]=(cells[ci]||"").trim(); });
+    // Device may be given as hostname OR serial → normalize to serial.
+    for(const p of ["A","B"]){ const d=r[p+"_Device"]; if(d){ const s=HOST2SERIAL[d.toLowerCase()]; if(s) r[p+"_Device"]=s; } if(r[p+"_VlanTag"]) r["_t_"+p+"_VlanTag"]="1"; }
+    return r; });
+  BULK_ROWS=rows.length?rows:[bulkBlank()];
+  await bulkPreloadIfaces(); renderBulk();
+  $("#bulkAlarm").classList.remove("show");
+  $("#bulkMsg").textContent=`imported ${rows.length} row(s) from CSV`;
+}
+function wireBulk(){
+  $("#bulkBtn").onclick=openBulk;
+  $("#bulkCancel").onclick=()=>$("#bulkOverlay").classList.remove("open");
+  $("#bulkAddRow").onclick=()=>{ BULK_ROWS.push(bulkBlank()); renderBulk(); };
+  $("#bulkClear").onclick=()=>{ if(confirm("Clear all bulk rows?")){ BULK_ROWS=[bulkBlank(),bulkBlank(),bulkBlank()]; renderBulk(); $("#bulkAlarm").classList.remove("show"); } };
+  $("#bulkSaveDeploy").onclick=saveBulkAll;
+  $("#bulkTemplateBtn").onclick=bulkTemplate;
+  $("#bulkImportBtn").onclick=()=>$("#bulkFile").click();
+  $("#bulkFile").onchange=e=>{ const f=e.target.files[0]; if(f) bulkImportCSV(f); e.target.value=""; };
+  const tb=$("#bulkTable");
+  tb.addEventListener("input",onBulkEdit); tb.addEventListener("change",onBulkEdit);
+  tb.addEventListener("click",e=>{ const d=e.target.closest("[data-del]"); if(!d)return; BULK_ROWS.splice(+d.dataset.del,1); if(!BULK_ROWS.length)BULK_ROWS=[bulkBlank()]; renderBulk(); });
+}
 async function startApp(){
   $("#authGate").classList.remove("show"); $("#app").classList.add("show");
   const acct=DEMO?null:(msalInstance.getActiveAccount()||msalInstance.getAllAccounts()[0]);
@@ -628,7 +884,7 @@ function wireUi(){
 }
 
 document.addEventListener("DOMContentLoaded",async()=>{
-  wireUi();
+  wireUi(); wireBulk();
   if(DEMO){ await startApp(); return; }
   initMsal();
   const resp=await msalInstance.handleRedirectPromise().catch(e=>{console.error(e);return null;});
