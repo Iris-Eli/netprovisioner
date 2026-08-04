@@ -250,11 +250,16 @@ const SHAREPOINT_CONFIG = {
   clientId: "f0bc695d-e675-4aa8-a114-8b7935183c30",
   tenantId: "iristransport.onmicrosoft.com",
   siteId:   "iristransport.sharepoint.com,4e195a2f-61e0-424d-a85e-6c0b3cab7267,613c2b2d-96f5-48a3-a65d-6f190ed5926c",
-  lists: { circuits:"Arista VPWS Builder", devices:"Arista Devices", interfaces:"Arista Interfaces", customers:"Customers", deployQueue:"Arista Deploy Queue" }
+  lists: { circuits:"Arista VPWS Builder", devices:"Arista Devices", interfaces:"Arista Interfaces", customers:"Customers", deployQueue:"Arista Deploy Queue", policers:"Arista Policers" }
 };
 const DEMO = !SHAREPOINT_CONFIG.clientId || SHAREPOINT_CONFIG.clientId.startsWith("PUT_");
 const ENCAPS=["match-1-and-preserve","match-1-and-pop","match-2-and-preserve","match-2-and-pop-outer","match-2-and-pop-both","unmatched","unmatched-and-push","untagged-subinterface","untagged-and-push"];
-const POLICERS=["10Gbps","5Gbps","3Gbps","2Gbps","1Gbps","500Mbps","250Mbps","100Mbps","50Mbps","20Mbps","MGMT"];
+// Fallback list; at runtime buildForm() replaces this with the live Arista Policers list so
+// the dropdown never drifts from the backend (add a policer in SharePoint -> it appears).
+let POLICERS=["10Gbps","5Gbps","3Gbps","2Gbps","1Gbps","500Mbps","250Mbps","100Mbps","50Mbps","20Mbps","MGMT"];
+// Order policer names by speed, fastest first; non-rate names (e.g. MGMT) sort last.
+function policerSpeed(n){ const m=/([\d.]+)\s*(g|m)/i.exec(n||""); if(!m) return -1; return parseFloat(m[1])*(m[2].toLowerCase()==="g"?1000:1); }
+const policerSort=a=>[...a].sort((x,y)=>{ const sx=policerSpeed(x),sy=policerSpeed(y); if(sx<0&&sy<0) return String(x).localeCompare(String(y)); if(sx<0) return 1; if(sy<0) return -1; return sy-sx; });
 /* Circuit lifecycle (engineer-controlled intent; drives the server-side connector). */
 const STATUSES=["Planned","Deployed","Disconnected"];
 const STATUS_HINT={
@@ -369,6 +374,12 @@ const Data={
     catch(e){ /* Customers list not created yet — fall back to circuit-derived */ }
     const used=(await this.circuits()).map(c=>c.Customer).filter(Boolean);
     return [...new Set([...uploaded,...used])].sort((a,b)=>a.localeCompare(b,undefined,{sensitivity:"base"})); },
+  // Policer names from the Arista Policers list (Title). null -> caller keeps the hardcoded
+  // POLICERS fallback (list missing / read failed), so the form always has options.
+  async policers(){ if(DEMO) return null;
+    try{ const names=(await listItems(SHAREPOINT_CONFIG.lists.policers)).map(f=>f.Title).filter(Boolean);
+      return names.length?names:null; }
+    catch(e){ return null; } },
   // Change one circuit's lifecycle status; stamp/clear DisconnectedDate (the 30-day clock).
   async setStatus(itemId,status){
     // Deployed/Disconnected are deploy actions (push / teardown) -> NeedsDeploy=Yes so the
@@ -434,6 +445,9 @@ function endpointFields(p){ return `
   <div class="field"><label>Reflector</label><select id="f_${p}_ref"><option>Disabled</option><option>Enabled</option></select></div>
   <div class="field"><label>LACP Passthrough</label><select id="f_${p}_lacp"><option>Disabled</option><option>Enabled</option></select></div>`; }
 async function buildForm(){
+  // Load the live policer list first so the endpoint dropdowns match the backend (fall back
+  // to the hardcoded POLICERS if the list is missing/unreadable).
+  try{ const pol=await Data.policers(); if(pol&&pol.length) POLICERS=policerSort(pol); }catch(e){}
   $("#epA").innerHTML=endpointFields("A"); $("#epB").innerHTML=endpointFields("B");
   const devs=await Data.devices();
   DEVMAP={}; devs.forEach(d=>{DEVMAP[d.serial]=d.hostname;});
@@ -651,6 +665,7 @@ const BULK_REQ=BULK_COLS.filter(c=>c.req).map(c=>c.k);
 let BULK_ROWS=[], BULK_DEVS=[], HOST2SERIAL={}, _bulkIface={};
 const bulkBlank=()=>{ const r={}; BULK_COLS.forEach(c=>r[c.k]=c.def||""); return r; };
 async function openBulk(){
+  try{ const pol=await Data.policers(); if(pol&&pol.length) POLICERS=policerSort(pol); }catch(e){}
   BULK_DEVS=await Data.devices();
   DEVMAP={}; HOST2SERIAL={};
   BULK_DEVS.forEach(d=>{ DEVMAP[d.serial]=d.hostname; HOST2SERIAL[d.hostname.toLowerCase()]=d.serial; HOST2SERIAL[d.serial.toLowerCase()]=d.serial; });
@@ -670,7 +685,9 @@ function bulkCell(col,ri,row){
   const v=row[col.k]==null?"":row[col.k];
   const dataAttr=`data-r="${ri}" data-k="${col.k}"`;
   if(col.type==="select"){
-    return `<select ${dataAttr}>`+col.opts.map(o=>`<option value="${esc(o)}"${String(o)===String(v)?" selected":""}>${esc(o===""?"—":o)}</option>`).join("")+`</select>`;
+    // Policer options come from the live POLICERS (backend list), not the frozen col.opts.
+    const opts=col.k.endsWith("_Policer")?["",...POLICERS]:col.opts;
+    return `<select ${dataAttr}>`+opts.map(o=>`<option value="${esc(o)}"${String(o)===String(v)?" selected":""}>${esc(o===""?"—":o)}</option>`).join("")+`</select>`;
   }
   if(col.type==="device"){
     return `<select ${dataAttr}><option value="">— device —</option>`+BULK_DEVS.map(d=>`<option value="${esc(d.serial)}"${d.serial===v?" selected":""}>${esc(d.hostname)}</option>`).join("")+`</select>`;
