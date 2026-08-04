@@ -114,6 +114,8 @@
   table.bulk tr.badrow td.rownum{background:rgba(255,68,102,.35);color:#fff}
   table.bulk td.err input,table.bulk td.err select{border-color:var(--danger)}
   .bulkdel{cursor:pointer;border:none;background:transparent;color:var(--danger);font-size:15px;line-height:1}
+  #circuitsBody a.cidlink{color:var(--accent-primary);font-weight:700;text-decoration:none;cursor:pointer}
+  #circuitsBody a.cidlink:hover{text-decoration:underline}
   .banner{background:rgba(255,170,0,.1);border:1px solid rgba(255,170,0,.35);color:var(--warning);padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px}
   code{background:var(--bg-tertiary);padding:1px 6px;border-radius:5px;font-size:12px}
   #authGate{position:fixed;inset:0;background:var(--bg-primary);display:none;align-items:center;justify-content:center;flex-direction:column;gap:18px;text-align:center}
@@ -512,7 +514,7 @@ function draw(){
   renderHealthBar();
   $("#circuitsBody").innerHTML=VIEW.map(c=>{
     const failed=c.DeployStatus==="Failed";
-    return `<tr class="${failed?'failed':''}"${failed?` title="${esc(c.DeployStatusDetail||'Deploy failed')}"`:''}><td><b>${esc(c.CID)}</b></td><td>${esc(c.Customer)}</td><td>${esc(c.ServiceType)}</td>
+    return `<tr class="${failed?'failed':''}"${failed?` title="${esc(c.DeployStatusDetail||'Deploy failed')}"`:''}><td><a href="#" class="cidlink" data-id="${esc(c.__id)}" title="Edit ${esc(c.CID)}">${esc(c.CID)}</a></td><td>${esc(c.Customer)}</td><td>${esc(c.ServiceType)}</td>
     <td>${esc(devName(c.A_Device))} <span class="muted">${esc(c.A_Interface)}</span></td><td>${esc(devName(c.B_Device))} <span class="muted">${esc(c.B_Interface)}</span></td>
     <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td class="stick col-status">${statusCell(c)}</td>
     <td class="stick col-edit"><button class="ghost editBtn" data-id="${esc(c.__id)}">Edit</button></td></tr>`;}).join("")
@@ -832,6 +834,12 @@ async function startApp(){
 function wireUi(){
   $("#newBtn").onclick=openNew;
   $("#cancelBtn").onclick=()=>{ EDIT_ID=null; $("#overlay").classList.remove("open"); };
+  // Click the dark backdrop (not the modal itself) to dismiss the edit + dashboards
+  // overlays. Uses mousedown-on-target so a text-selection drag that ends on the backdrop
+  // doesn't close it. NOT wired for the bulk grid — a stray click shouldn't wipe a
+  // half-filled batch (use its Cancel button).
+  $("#overlay").addEventListener("mousedown",e=>{ if(e.target===e.currentTarget){ EDIT_ID=null; e.currentTarget.classList.remove("open"); } });
+  $("#dashOverlay").addEventListener("mousedown",e=>{ if(e.target===e.currentTarget) e.currentTarget.classList.remove("open"); });
   $("#saveBtn").onclick=()=>save(false); $("#saveDeployBtn").onclick=()=>save(true);
   $("#refreshBtn").onclick=renderTable; $("#search").oninput=draw;   // draw = filter cached data, no re-fetch
   document.querySelectorAll(".filters input[data-col]").forEach(i=>i.addEventListener("input",draw));
@@ -874,10 +882,11 @@ function wireUi(){
     }catch(err){ alert("Status update failed: "+err.message); }
     renderTable();
   });
-  // Edit button per row -> open the modal pre-filled
+  // Edit button OR the CID link per row -> open the modal pre-filled
   $("#circuitsBody").addEventListener("click",e=>{
-    const btn=e.target.closest("button.editBtn"); if(!btn)return;
-    openEdit(btn.getAttribute("data-id"));
+    const el=e.target.closest("button.editBtn, a.cidlink"); if(!el)return;
+    e.preventDefault();
+    openEdit(el.getAttribute("data-id"));
   });
   ["A","B"].forEach(p=>["dev","int","sub"].forEach(f=>document.addEventListener("change",e=>{if(e.target.id===`f_${p}_${f}`)checkDuplicate();})));
   document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{if(b.disabled)return;document.querySelectorAll("nav.tabs button").forEach(x=>x.classList.remove("active"));b.classList.add("active");});
