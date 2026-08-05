@@ -156,7 +156,7 @@
     <div class="logo"><h1>Net Provisioner</h1><div class="version">IRIS · v0.6</div></div>
     <nav class="tabs" id="tabs">
       <button data-tab="vpws" class="active">Arista VPWS</button>
-      <button data-tab="vlan" disabled title="Coming soon">VLAN</button>
+      <button data-tab="localpatch" title="Local cross-connect: two sub-interfaces on one switch">Local Patch</button>
       <button data-tab="vrf" disabled title="Coming soon">VRF / L3VPN</button>
     </nav>
     <div class="spacer"></div>
@@ -194,6 +194,33 @@
             </tr>
           </thead>
           <tbody id="circuitsBody"></tbody>
+        </table>
+      </div>
+    </section>
+    <section id="tab-localpatch" class="card" style="display:none">
+      <div class="toolbar">
+        <input id="lpSearch" type="search" placeholder="Search local patches by CID, customer, device, VLAN…"/>
+        <button class="ghost" id="lpRefreshBtn">Refresh</button>
+        <span class="muted" style="flex:1;font-size:12px">Local cross-connect — two sub-interfaces bridged on the SAME switch (no VPWS).</span>
+        <button class="primary" id="lpNewBtn">+ New Local Patch</button>
+      </div>
+      <div style="overflow:auto">
+        <table id="lpTable">
+          <thead>
+            <tr><th>Circuit ID</th><th>Customer</th><th>Type</th><th>Device</th><th>End A</th><th>End B</th><th>VLAN</th><th class="stick col-status">Status</th><th class="stick col-edit"></th></tr>
+            <tr class="filters">
+              <th><input data-lpcol="cid" placeholder="filter…"></th>
+              <th><input data-lpcol="customer" placeholder="filter…"></th>
+              <th><input data-lpcol="type" placeholder="filter…"></th>
+              <th><input data-lpcol="device" placeholder="filter…"></th>
+              <th><input data-lpcol="a" placeholder="filter…"></th>
+              <th><input data-lpcol="b" placeholder="filter…"></th>
+              <th><input data-lpcol="vlan" placeholder="filter…"></th>
+              <th class="stick col-status"><input data-lpcol="status" placeholder="filter…"></th>
+              <th class="stick col-edit"></th>
+            </tr>
+          </thead>
+          <tbody id="lpBody"></tbody>
         </table>
       </div>
     </section>
@@ -258,6 +285,32 @@
     </div>
   </div>
 </div>
+<div class="overlay" id="lpOverlay">
+  <div class="modal">
+    <h2 id="lpModalTitle">New Local Patch</h2>
+    <div class="body">
+      <div class="alarm" id="lpDupAlarm"></div>
+      <div class="grid">
+        <div class="field"><label>Circuit ID (CID) <span class="req">*</span></label><input id="lp_cid" placeholder="e.g. LP-1001.LAB.001"/></div>
+        <div class="field"><label>Customer <span class="req">*</span></label><input id="lp_customer" list="dl_customers" placeholder="Pick a customer or type a new one…" autocomplete="off"/></div>
+        <div class="field"><label>Service Type</label>
+          <select id="lp_svctype"><option value="">—</option><option>EBH</option><option>ETH</option><option>MGMT</option><option>ENT</option><option>DIA</option></select></div>
+        <div class="field"><label>Status <span class="req">*</span></label>
+          <select id="lp_status"><option>Planned</option><option>Deployed</option><option>Disconnected</option></select>
+          <div class="hint" id="lpStatusHint"></div></div>
+        <div class="field" style="grid-column:1/-1"><label>Device <span class="req">*</span></label><select id="lp_dev"></select>
+          <div class="hint">Both ends are two sub-interfaces on this one switch.</div></div>
+      </div>
+      <fieldset><legend>End A</legend><div class="grid" id="lpEpA"></div></fieldset>
+      <fieldset><legend>End B</legend><div class="grid" id="lpEpB"></div></fieldset>
+    </div>
+    <div class="foot">
+      <button class="ghost danger" id="lpDeleteBtn" style="display:none">Delete patch</button>
+      <span class="muted" id="lpValMsg"></span>
+      <div style="display:flex;gap:10px"><button class="ghost" id="lpCancelBtn">Cancel</button><button class="ghost" id="lpSaveBtn">Save</button><button class="primary" id="lpSaveDeployBtn">Save &amp; Deploy</button></div>
+    </div>
+  </div>
+</div>
 <datalist id="dl_customers"></datalist>
 
 <script>
@@ -268,7 +321,7 @@ const SHAREPOINT_CONFIG = {
   clientId: "f0bc695d-e675-4aa8-a114-8b7935183c30",
   tenantId: "iristransport.onmicrosoft.com",
   siteId:   "iristransport.sharepoint.com,4e195a2f-61e0-424d-a85e-6c0b3cab7267,613c2b2d-96f5-48a3-a65d-6f190ed5926c",
-  lists: { circuits:"Arista VPWS Builder", devices:"Arista Devices", interfaces:"Arista Interfaces", customers:"Customers", deployQueue:"Arista Deploy Queue", policers:"Arista Policers" }
+  lists: { circuits:"Arista VPWS Builder", devices:"Arista Devices", interfaces:"Arista Interfaces", customers:"Customers", deployQueue:"Arista Deploy Queue", policers:"Arista Policers", localPatch:"Arista Local Patch Builder" }
 };
 const DEMO = !SHAREPOINT_CONFIG.clientId || SHAREPOINT_CONFIG.clientId.startsWith("PUT_");
 const ENCAPS=["match-1-and-preserve","match-1-and-pop","match-2-and-preserve","match-2-and-pop-outer","match-2-and-pop-both","unmatched","unmatched-and-push","untagged-subinterface","untagged-and-push"];
@@ -288,6 +341,11 @@ const STATUS_HINT={
 const DEMO_CIRCUITS=[
   {__id:"d1",CID:"1001.10.10.EBH.DEMO.001_VLAN_100",Customer:"DEMO_CUST_A",ServiceType:"EBH",A_Device:"DEMO-SW-01",A_Interface:"Ethernet2",A_VlanTag:100,B_Device:"DEMO-SW-02",B_Interface:"Ethernet3",Status:"Deployed"},
   {__id:"d2",CID:"2002.20.20.ETH.DEMO.001_VLAN_200",Customer:"DEMO_CUST_B",ServiceType:"ETH",A_Device:"DEMO-SW-01",A_Interface:"Ethernet24",A_VlanTag:200,B_Device:"DEMO-SW-03",B_Interface:"Ethernet1",Status:"Planned"}
+];
+const DEMO_LOCALPATCHES=[
+  {__id:"lp1",CID:"LP-3003.LAB.001",Customer:"DEMO_CUST_A",ServiceType:"ETH",Device:"DEMO-SW-01",
+   A_Interface:"Ethernet2",A_SubInt:300,A_VlanTag:300,A_Encap:"match-1-and-preserve",A_Policer:"1Gbps",A_Reflector:"Disabled",A_LacpPassthrough:"Disabled",
+   B_Interface:"Ethernet3",B_SubInt:300,B_VlanTag:300,B_Encap:"match-1-and-preserve",B_Policer:"",B_Reflector:"Disabled",B_LacpPassthrough:"Disabled",Status:"Deployed"}
 ];
 
 /* ===== AUTH (MSAL) ===== */
@@ -444,6 +502,31 @@ const Data={
   // Hard delete of a circuit row (escape hatch; normal teardown is Status=Disconnected).
   async deleteCircuit(itemId){ if(DEMO){ const i=DEMO_CIRCUITS.findIndex(x=>String(x.__id)===String(itemId)); if(i>=0) DEMO_CIRCUITS.splice(i,1); return true; }
     const id=await listId(SHAREPOINT_CONFIG.lists.circuits);
+    await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items/${itemId}`,{method:"DELETE"});
+    return true; },
+  // ===== Local Patch (Arista Local Patch Builder) — two subints on one switch =====
+  async localPatches(){ if(DEMO) return DEMO_LOCALPATCHES;
+    const id=await listId(SHAREPOINT_CONFIG.lists.localPatch);
+    const items=await graphAll(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items?$expand=fields&$top=999`);
+    return items.map(i=>({...i.fields, __id:i.id})); },
+  async saveLocalPatch(rec){ if(DEMO){ DEMO_LOCALPATCHES.push({...rec, __id:"lp"+(DEMO_LOCALPATCHES.length+1)}); return true; }
+    const id=await listId(SHAREPOINT_CONFIG.lists.localPatch);
+    await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items`,{method:"POST",body:JSON.stringify({fields:rec})});
+    return true; },
+  async updateLocalPatch(itemId, rec){ if(DEMO){ const c=DEMO_LOCALPATCHES.find(x=>String(x.__id)===String(itemId)); if(c) Object.assign(c,rec); return true; }
+    const id=await listId(SHAREPOINT_CONFIG.lists.localPatch);
+    await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items/${itemId}/fields`,{method:"PATCH",body:JSON.stringify(rec)});
+    return true; },
+  // Inline status change on a local patch; Deployed/Disconnected -> NeedsDeploy=Yes (push).
+  async setLPStatus(itemId,status){
+    const fields={Status:status, NeedsDeploy:(status==="Planned"?"No":"Yes"),
+      DisconnectedDate:(status==="Disconnected"? new Date().toISOString():null)};
+    if(DEMO){ const c=DEMO_LOCALPATCHES.find(x=>x.__id===itemId); if(c){c.Status=status;c.NeedsDeploy=fields.NeedsDeploy;} return true; }
+    const id=await listId(SHAREPOINT_CONFIG.lists.localPatch);
+    await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items/${itemId}/fields`,{method:"PATCH",body:JSON.stringify(fields)});
+    return true; },
+  async deleteLocalPatch(itemId){ if(DEMO){ const i=DEMO_LOCALPATCHES.findIndex(x=>String(x.__id)===String(itemId)); if(i>=0) DEMO_LOCALPATCHES.splice(i,1); return true; }
+    const id=await listId(SHAREPOINT_CONFIG.lists.localPatch);
     await graph(`/sites/${SHAREPOINT_CONFIG.siteId}/lists/${id}/items/${itemId}`,{method:"DELETE"});
     return true; }
 };
@@ -858,6 +941,133 @@ function wireBulk(){
   tb.addEventListener("input",onBulkEdit); tb.addEventListener("change",onBulkEdit);
   tb.addEventListener("click",e=>{ const d=e.target.closest("[data-del]"); if(!d)return; BULK_ROWS.splice(+d.dataset.del,1); if(!BULK_ROWS.length)BULK_ROWS=[bulkBlank()]; renderBulk(); });
 }
+/* ===== LOCAL PATCH tab — two subints bridged on ONE switch (no VPWS) ===== */
+let LP=[], LP_EDIT_ID=null, LP_BUILT=false;
+// One end's fields (no Device — the patch shares a single device chosen once above).
+function lpEndFields(p){ return `
+  <div class="field"><label>Interface <span class="req">*</span></label><select id="lp_${p}_int"><option value="">— pick a device first —</option></select></div>
+  <div class="field"><label>Sub-interface <span class="req">*</span></label><input id="lp_${p}_sub" type="number" placeholder="e.g. 500"/></div>
+  <div class="field"><label>VLAN Tag <span class="req">*</span></label><input id="lp_${p}_vlan" type="number" placeholder="usually = sub-interface"/></div>
+  <div class="field"><label>Inner VLAN Tag</label><input id="lp_${p}_ivlan" type="number" placeholder="only for double-tag encaps"/></div>
+  <div class="field"><label>Encapsulation</label><select id="lp_${p}_enc">${ENCAPS.map(e=>`<option${e==="match-1-and-preserve"?" selected":""}>${e}</option>`).join("")}</select></div>
+  <div class="field"><label>Policer</label><select id="lp_${p}_pol"><option value="">—</option>${POLICERS.map(x=>`<option>${x}</option>`).join("")}</select></div>
+  <div class="field"><label>Reflector</label><select id="lp_${p}_ref"><option>Disabled</option><option>Enabled</option></select></div>
+  <div class="field"><label>LACP Passthrough</label><select id="lp_${p}_lacp"><option>Disabled</option><option>Enabled</option></select></div>`; }
+async function buildLpForm(){
+  try{ const pol=await Data.policers(); if(pol&&pol.length) POLICERS=policerSort(pol); }catch(e){}
+  $("#lpEpA").innerHTML=lpEndFields("A"); $("#lpEpB").innerHTML=lpEndFields("B");
+  const devs=await Data.devices();
+  DEVMAP={}; devs.forEach(d=>{DEVMAP[d.serial]=d.hostname;});
+  $("#lp_dev").innerHTML=`<option value="">— select device —</option>`+devs.map(d=>`<option value="${esc(d.serial)}">${esc(d.hostname)}</option>`).join("");
+  $("#lp_dev").onchange=()=>lpLoadInterfaces($("#lp_dev").value);
+  for(const p of ["A","B"]){ const sub=$(`#lp_${p}_sub`), vlan=$(`#lp_${p}_vlan`);
+    vlan.dataset.touched=""; vlan.oninput=()=>{ vlan.dataset.touched="1"; };
+    sub.oninput=()=>{ if(!vlan.dataset.touched) vlan.value=sub.value; }; }
+  $("#dl_customers").innerHTML=(await Data.customers()).map(c=>`<option value="${esc(c)}">`).join("");
+}
+// Both ends live on the ONE device -> load that device's interfaces into both pickers.
+async function lpLoadInterfaces(dev, selA, selB){
+  const ints = dev ? await Data.interfaces(dev) : [];
+  for(const [p,sel] of [["A",selA],["B",selB]]){
+    $(`#lp_${p}_int`).innerHTML=`<option value="">— select interface —</option>`+ints.map(i=>
+      `<option value="${esc(i.name)}"${sel&&i.name===sel?" selected":""}>${esc(i.name)}${i.desc?" — "+esc(i.desc):""}</option>`).join("");
+  }
+}
+function lpStatusCell(c){ const s=STATUSES.includes(c.Status)?c.Status:"Planned";
+  return `<select class="statusSel ${s}" data-lpid="${esc(c.__id)}" title="${esc(STATUS_HINT[s])}">`
+    +STATUSES.map(x=>`<option${x===s?" selected":""}>${x}</option>`).join("")+`</select>`; }
+async function renderLP(){ try{ LP=await Data.localPatches(); }catch(e){ LP=[]; console.warn("local patch load:",e.message);} drawLP(); }
+function lpColFilters(){ const f={}; document.querySelectorAll("[data-lpcol]").forEach(i=>{ const v=i.value.trim().toLowerCase(); if(v) f[i.dataset.lpcol]=v; }); return f; }
+function drawLP(){
+  const q=($("#lpSearch").value||"").trim().toLowerCase(), f=lpColFilters();
+  const has=(v,t)=>String(v==null?"":v).toLowerCase().includes(t);
+  const rows=LP.filter(c=>{
+    if(q && !(JSON.stringify(c)+" "+devName(c.Device)).toLowerCase().includes(q)) return false;
+    if(f.cid&&!has(c.CID,f.cid))return false; if(f.customer&&!has(c.Customer,f.customer))return false;
+    if(f.type&&!has(c.ServiceType,f.type))return false; if(f.device&&!has(devName(c.Device)+" "+c.Device,f.device))return false;
+    if(f.a&&!has(c.A_Interface+"."+(c.A_SubInt||""),f.a))return false; if(f.b&&!has(c.B_Interface+"."+(c.B_SubInt||""),f.b))return false;
+    if(f.vlan&&!has([c.A_VlanTag,c.A_SubInt,c.B_VlanTag,c.B_SubInt].join(" "),f.vlan))return false;
+    if(f.status&&!has(c.Status,f.status))return false; return true; });
+  $("#lpBody").innerHTML=rows.map(c=>{
+    const failed=c.DeployStatus==="Failed";
+    return `<tr class="${failed?'failed':''}"${failed?` title="${esc(c.DeployStatusDetail||'Deploy failed')}"`:''}><td><a href="#" class="cidlink" data-lpid="${esc(c.__id)}">${esc(c.CID)}</a></td><td>${esc(c.Customer)}</td><td>${esc(c.ServiceType)}</td>
+    <td>${esc(devName(c.Device))}</td>
+    <td><span class="muted">${esc(c.A_Interface)}.${esc(c.A_SubInt)}</span></td><td><span class="muted">${esc(c.B_Interface)}.${esc(c.B_SubInt)}</span></td>
+    <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td class="stick col-status">${lpStatusCell(c)}</td>
+    <td class="stick col-edit"><button class="ghost editBtn" data-lpid="${esc(c.__id)}">Edit</button></td></tr>`;}).join("")
+    || `<tr><td colspan="9" class="muted" style="padding:24px;text-align:center">No local patches yet.</td></tr>`;
+}
+async function openLpNew(){ LP_EDIT_ID=null; $("#lpModalTitle").textContent="New Local Patch";
+  $("#lp_cid").readOnly=false; $("#lpDeleteBtn").style.display="none"; await fillLpForm(null); $("#lpOverlay").classList.add("open"); }
+async function openLpEdit(id){ const c=LP.find(x=>String(x.__id)===String(id)); if(!c)return;
+  LP_EDIT_ID=id; $("#lpModalTitle").textContent="Edit Local Patch — "+(c.CID||""); $("#lp_cid").readOnly=true;
+  $("#lpDeleteBtn").style.display="inline-block"; await fillLpForm(c); $("#lpOverlay").classList.add("open"); }
+async function fillLpForm(c){
+  const set=(id,v)=>{ $(id).value=(v==null?"":v); };
+  set("#lp_cid",c&&c.CID); set("#lp_customer",c&&c.Customer); set("#lp_svctype",c?c.ServiceType||"":"");
+  const st=c&&STATUSES.includes(c.Status)?c.Status:"Planned"; $("#lp_status").value=st; $("#lpStatusHint").textContent=STATUS_HINT[st]||"";
+  set("#lp_dev", c&&c.Device);
+  await lpLoadInterfaces(c?c.Device:"", c?c.A_Interface:"", c?c.B_Interface:"");
+  for(const p of ["A","B"]){
+    set(`#lp_${p}_sub`,c&&c[p+"_SubInt"]); set(`#lp_${p}_vlan`,c&&c[p+"_VlanTag"]); set(`#lp_${p}_ivlan`,c&&c[p+"_InnerVlanTag"]);
+    set(`#lp_${p}_enc`,c?c[p+"_Encap"]||"match-1-and-preserve":"match-1-and-preserve"); set(`#lp_${p}_pol`,c?c[p+"_Policer"]||"":"");
+    set(`#lp_${p}_ref`,c?c[p+"_Reflector"]||"Disabled":"Disabled"); set(`#lp_${p}_lacp`,c?c[p+"_LacpPassthrough"]||"Disabled":"Disabled");
+    $(`#lp_${p}_vlan`).dataset.touched=(c&&c[p+"_VlanTag"]!=null)?"1":"";
+  }
+  $("#lpDupAlarm").classList.remove("show"); $("#lpValMsg").textContent="";
+}
+function lpValidate(){
+  const need={"#lp_cid":"Circuit ID","#lp_customer":"Customer","#lp_dev":"Device",
+    "#lp_A_int":"End A interface","#lp_A_sub":"End A sub-interface","#lp_A_vlan":"End A VLAN",
+    "#lp_B_int":"End B interface","#lp_B_sub":"End B sub-interface","#lp_B_vlan":"End B VLAN"};
+  const m=Object.entries(need).filter(([s])=>!$(s).value).map(([,n])=>n);
+  if(m.length){$("#lpValMsg").textContent="Required: "+m.join(", ");$("#lpValMsg").style.color="var(--danger)";return false;}
+  if($("#lp_A_int").value===$("#lp_B_int").value && String($("#lp_A_sub").value)===String($("#lp_B_sub").value)){
+    $("#lpValMsg").textContent="End A and End B can't be the same interface + sub-interface.";$("#lpValMsg").style.color="var(--danger)";return false;}
+  $("#lpValMsg").textContent="";return true;
+}
+async function saveLP(deploy){
+  if(!lpValidate())return;
+  const g=id=>$(id).value; const chosen=g("#lp_status")||"Planned";
+  const rec={CID:g("#lp_cid"),Customer:g("#lp_customer"),ServiceType:g("#lp_svctype"),Device:g("#lp_dev"),
+    A_Interface:g("#lp_A_int"),A_SubInt:Number(g("#lp_A_sub"))||null,A_VlanTag:Number(g("#lp_A_vlan"))||null,A_InnerVlanTag:Number(g("#lp_A_ivlan"))||null,A_Encap:g("#lp_A_enc"),A_Policer:g("#lp_A_pol"),A_Reflector:g("#lp_A_ref"),A_LacpPassthrough:g("#lp_A_lacp"),
+    B_Interface:g("#lp_B_int"),B_SubInt:Number(g("#lp_B_sub"))||null,B_VlanTag:Number(g("#lp_B_vlan"))||null,B_InnerVlanTag:Number(g("#lp_B_ivlan"))||null,B_Encap:g("#lp_B_enc"),B_Policer:g("#lp_B_pol"),B_Reflector:g("#lp_B_ref"),B_LacpPassthrough:g("#lp_B_lacp"),
+    Status: deploy ? (chosen==="Disconnected"?"Disconnected":"Deployed") : chosen,
+    NeedsDeploy: deploy ? "Yes" : "No"};
+  if(rec.Status==="Disconnected") rec.DisconnectedDate=new Date().toISOString();
+  try{
+    if(LP_EDIT_ID) await Data.updateLocalPatch(LP_EDIT_ID, rec); else await Data.saveLocalPatch(rec);
+    if(deploy) await Data.queueDeploy(rec.CID);   // same queue -> deploy-static --changed picks up all NeedsDeploy=Yes
+  }catch(e){ alert((deploy?"Save & Deploy":"Save")+" failed: "+e.message); return; }
+  LP_EDIT_ID=null; $("#lpOverlay").classList.remove("open"); renderLP();
+}
+async function ensureLpBuilt(){ if(LP_BUILT)return; await buildLpForm(); LP_BUILT=true; }
+function switchTab(tab){
+  document.querySelectorAll("nav.tabs button").forEach(b=>b.classList.toggle("active", b.dataset.tab===tab));
+  document.querySelectorAll('main > section[id^="tab-"]').forEach(s=>{ s.style.display = (s.id==="tab-"+tab)?"":"none"; });
+  if(tab==="localpatch"){ ensureLpBuilt().then(renderLP); }
+}
+function wireLp(){
+  $("#lpNewBtn").onclick=async()=>{ await ensureLpBuilt(); openLpNew(); };
+  $("#lpRefreshBtn").onclick=renderLP;
+  $("#lpSearch").oninput=drawLP; document.querySelectorAll("[data-lpcol]").forEach(i=>i.addEventListener("input",drawLP));
+  $("#lpCancelBtn").onclick=()=>{ LP_EDIT_ID=null; $("#lpOverlay").classList.remove("open"); };
+  $("#lpSaveBtn").onclick=()=>saveLP(false); $("#lpSaveDeployBtn").onclick=()=>saveLP(true);
+  $("#lp_status").onchange=()=>{ $("#lpStatusHint").textContent=STATUS_HINT[$("#lp_status").value]||""; };
+  $("#lpOverlay").addEventListener("mousedown",e=>{ if(e.target===e.currentTarget){ LP_EDIT_ID=null; e.currentTarget.classList.remove("open"); } });
+  $("#lpDeleteBtn").onclick=async()=>{ if(!LP_EDIT_ID)return; const cid=$("#lp_cid").value||LP_EDIT_ID;
+    if(!confirm(`Permanently DELETE local patch "${cid}"? Use Status = Disconnected for a normal teardown.`))return;
+    try{ const c=LP.find(x=>String(x.__id)===String(LP_EDIT_ID)); const live=$("#lp_status").value!=="Planned"; const dev=$("#lp_dev").value;
+      if(live && dev) await Data.queueDeploy(cid, dev); await Data.deleteLocalPatch(LP_EDIT_ID);
+    }catch(e){ alert("Delete failed: "+e.message); return; }
+    LP_EDIT_ID=null; $("#lpOverlay").classList.remove("open"); renderLP(); };
+  // CID link + Edit button + inline status on the LP table
+  $("#lpBody").addEventListener("click",e=>{ const el=e.target.closest("a.cidlink, button.editBtn"); if(!el)return; e.preventDefault(); openLpEdit(el.getAttribute("data-lpid")); });
+  $("#lpBody").addEventListener("change",async e=>{ const sel=e.target.closest("select.statusSel"); if(!sel)return;
+    const id=sel.getAttribute("data-lpid"), status=sel.value;
+    try{ await Data.setLPStatus(id,status); if(status!=="Planned"){ const c=LP.find(x=>String(x.__id)===String(id)); await Data.queueDeploy(c?c.CID:id); } }
+    catch(err){ alert("Status update failed: "+err.message); } renderLP(); });
+}
 async function startApp(){
   $("#authGate").classList.remove("show"); $("#app").classList.add("show");
   const acct=DEMO?null:(msalInstance.getActiveAccount()||msalInstance.getAllAccounts()[0]);
@@ -924,11 +1134,11 @@ function wireUi(){
     openEdit(el.getAttribute("data-id"));
   });
   ["A","B"].forEach(p=>["dev","int","sub"].forEach(f=>document.addEventListener("change",e=>{if(e.target.id===`f_${p}_${f}`)checkDuplicate();})));
-  document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{if(b.disabled)return;document.querySelectorAll("nav.tabs button").forEach(x=>x.classList.remove("active"));b.classList.add("active");});
+  document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{ if(b.disabled)return; switchTab(b.dataset.tab); });
 }
 
 document.addEventListener("DOMContentLoaded",async()=>{
-  wireUi(); wireBulk();
+  wireUi(); wireBulk(); wireLp();
   if(DEMO){ await startApp(); return; }
   initMsal();
   const resp=await msalInstance.handleRedirectPromise().catch(e=>{console.error(e);return null;});
