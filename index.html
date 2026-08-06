@@ -174,6 +174,7 @@
         <button class="ghost" id="reflectorBtn" title="Show only circuits with a reflector enabled (A or B)">Reflector report</button>
         <button class="ghost" id="exportBtn" title="Download the current filtered view as CSV">Export CSV</button>
         <button class="ghost" id="dashBtn" title="Customer and device dashboards">📊 Dashboards</button>
+        <button class="ghost" id="cfgBtn" title="Show a switch's expected EOS config (works offline — paste to the CLI if the pipeline is down)">📄 Show Config</button>
         <button class="ghost" id="bulkBtn" title="Add many circuits at once (grid or CSV), one Save &amp; Deploy">⊞ Bulk Add</button>
         <button class="primary" id="newBtn">+ New Circuit</button>
       </div>
@@ -311,6 +312,18 @@
     </div>
   </div>
 </div>
+<div class="overlay" id="cfgOverlay">
+  <div class="modal wide">
+    <h2>Expected Switch Config <span class="muted" style="font-size:12px;font-weight:400">— DR view, rendered in-browser (works if the pipeline is down)</span></h2>
+    <div class="body">
+      <div class="field" style="max-width:420px"><label>Switch</label><select id="cfgDev"></select>
+        <div class="hint">The exact EOS config the connector would push — paste into the switch CLI if you must bypass automation.</div></div>
+      <pre id="cfgOut" style="white-space:pre;overflow:auto;max-height:60vh;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:8px;padding:12px;font-size:12.5px;line-height:1.45"></pre>
+    </div>
+    <div class="foot"><span class="muted" style="font-size:12px">Generated from cached SharePoint data — no CVaaS/Actions needed.</span>
+      <div style="display:flex;gap:10px"><button class="ghost" id="cfgCopy">Copy</button><button class="ghost" id="cfgClose">Close</button></div></div>
+  </div>
+</div>
 <datalist id="dl_customers"></datalist>
 
 <script>
@@ -328,6 +341,9 @@ const ENCAPS=["match-1-and-preserve","match-1-and-pop","match-2-and-preserve","m
 // Fallback list; at runtime buildForm() replaces this with the live Arista Policers list so
 // the dropdown never drifts from the backend (add a policer in SharePoint -> it appears).
 let POLICERS=["10Gbps","5Gbps","3Gbps","2Gbps","1Gbps","500Mbps","250Mbps","100Mbps","50Mbps","20Mbps","MGMT"];
+// Network-wide BGP ASN (non-secret; mirrors the CVAAS_BGP_ASN Actions secret). Used by the
+// in-browser config renderer (the DR "show config" view).
+const BGP_ASN="65000";
 // Order policer names by speed, fastest first; non-rate names (e.g. MGMT) sort last.
 function policerSpeed(n){ const m=/([\d.]+)\s*(g|m)/i.exec(n||""); if(!m) return -1; return parseFloat(m[1])*(m[2].toLowerCase()==="g"?1000:1); }
 const policerSort=a=>[...a].sort((x,y)=>{ const sx=policerSpeed(x),sy=policerSpeed(y); if(sx<0&&sy<0) return String(x).localeCompare(String(y)); if(sx<0) return 1; if(sy<0) return -1; return sy-sx; });
@@ -456,6 +472,10 @@ const Data={
     try{ const names=(await listItems(SHAREPOINT_CONFIG.lists.policers)).map(f=>f.Title).filter(Boolean);
       return names.length?names:null; }
     catch(e){ return null; } },
+  // Policer definitions (name -> {cir,bc}) for the config renderer's policy-map block.
+  async policerDefs(){ if(DEMO) return {"1Gbps":{cir:1200,bc:250000},"500Mbps":{cir:600,bc:250000},"MGMT":{cir:12,bc:100000}};
+    try{ const out={}; (await listItems(SHAREPOINT_CONFIG.lists.policers)).forEach(f=>{ if(f.Title) out[f.Title]={cir:f.CIRMbps,bc:f.BC}; }); return out; }
+    catch(e){ return {}; } },
   // Change one circuit's lifecycle status; stamp/clear DisconnectedDate (the 30-day clock).
   async setStatus(itemId,status){
     // Deployed/Disconnected are deploy actions (push / teardown) -> NeedsDeploy=Yes so the
@@ -1068,6 +1088,134 @@ function wireLp(){
     try{ await Data.setLPStatus(id,status); if(status!=="Planned"){ const c=LP.find(x=>String(x.__id)===String(id)); await Data.queueDeploy(c?c.CID:id); } }
     catch(err){ alert("Status update failed: "+err.message); } renderLP(); });
 }
+/* ===== In-browser config renderer (DR fallback) — port of studio_configonly.mako =====
+   When Actions/CVaaS is down, this shows the exact EOS config to paste into each switch.
+   Functionally faithful to the connector's renderer (configgen); indentation is cleaned for
+   readability (EOS ignores it on paste). Values come from the cached SharePoint data, so it
+   works fully offline of the pipeline. */
+function _cfgIds(cid, serviceId, customer){
+  cid=String(cid||""); customer=String(customer||"");
+  const strict=/([0-9]{4,5})\.\d+\.\d+\.\w+\.\w+\.(\d{3})/.exec(cid);
+  let prefix, cidInst=null;
+  if(strict){ prefix=strict[1]; cidInst=strict[2]; }
+  else { const p=/([0-9]{4,5})/.exec(cid)||/([0-9]+)/.exec(cid); prefix=p?p[1]:""; }
+  let inst=(serviceId!=null&&String(serviceId).trim()!=="")?String(serviceId):(cidInst||"001");
+  inst=inst.padStart(3,"0");
+  const sid=prefix+":"+inst, vid=prefix+inst, name=customer+"-"+cid;
+  return {prefix,inst,sid,vid,name,pw:name+"-PW",rd:sid,rt:BGP_ASN+":"+vid};
+}
+// Encapsulation stanza (mirrors flexible_encap). Returns indented lines.
+function _encapLines(encap,vlan,inner){
+  const L=[]; const v=vlan, iv=inner;
+  const push=s=>L.push("    "+s);
+  push("encapsulation vlan");
+  const c=s=>L.push("        "+s);
+  switch(encap){
+    case "match-1-and-pop": c(`client dot1q ${v}`); break;
+    case "match-1-and-preserve": c(`client dot1q ${v} network client`); break;
+    case "unmatched": c("client unmatched"); break;
+    case "unmatched-and-push": c(`client unmatched network dot1q ${v}`); break;
+    case "match-2-and-preserve": c(`client dot1q outer ${v} inner ${iv} network client`); break;
+    case "match-2-and-pop-outer": c(`client dot1q outer ${v} inner ${iv} network dot1q ${iv}`); break;
+    case "match-2-and-pop-both": c(`client dot1q outer ${v} inner ${iv}`); break;
+    case "untagged-subinterface": c("client untagged network untagged"); break;
+    case "untagged-and-push": c(`client untagged network dot1q ${v}`); break;
+    default:
+      L.length=0;   // the "else" branch uses a different top-level command
+      L.push(iv?`    encapsulation dot1q vlan ${v} inner ${iv}`:`    encapsulation dot1q vlan ${v}`);
+      return L;
+  }
+  c("exit"); return L;
+}
+// One VPWS endpoint's config on THIS switch (patch-panel + policer + subint + BGP vpws).
+function _vpwsEndpointCfg(c, e, pdefs){
+  const pt=c[e+"_PortType"]||"Ethernet";
+  const isPc = pt==="Port Channel";
+  const intf = isPc ? ("port-channel "+ (c[e+"_PortChannelId"]??"")) : String(c[e+"_Interface"]||"");
+  const sub  = isPc ? c[e+"_PortChannelSubInt"] : c[e+"_SubInt"];
+  const ifFull = (sub!=null&&String(sub).trim()!=="") ? `${intf}.${sub}` : intf;
+  const ids=_cfgIds(c.CID, c.ServiceId, c.Customer);
+  const pol=c[e+"_Policer"], refl=c[e+"_Reflector"]==="Enabled", lacp=c[e+"_LacpPassthrough"]==="Enabled";
+  const shut=(c[e+"_CircuitState"]==="Shutdown");
+  const L=[];
+  L.push("patch panel","    patch "+ids.name);
+  if(shut) L.push("        shutdown");
+  L.push("        connector 1 interface "+ifFull,
+         "        connector 2 pseudowire bgp vpws "+ids.name+" pseudowire "+ids.pw,
+         "        exit","    exit","!");
+  if(pol && pdefs[pol]) L.push(`policy-map type quality-of-service ${pol}`,"  class class-default",
+    `    police cir ${pdefs[pol].cir} Mbps bc ${pdefs[pol].bc} bytes`,"    exit","  exit");
+  L.push("interface  "+ifFull);
+  if(pol) L.push("  service-policy type qos input "+pol);
+  L.push("    description "+c.Customer+" "+c.CID);
+  L.push(..._encapLines(c[e+"_Encap"]||"match-1-and-preserve", c[e+"_VlanTag"], c[e+"_InnerVlanTag"]));
+  L.push("    exit");
+  if(refl) L.push("    monitor ethernet reflectors","    reflector interface "+ifFull,"    direction out","    mac swap","    exit");
+  if(lacp) L.push("    interface "+ifFull,"    l2-protocol forwarding profile lacp","    exit");
+  L.push("!");
+  L.push("router bgp "+BGP_ASN,"    vpws "+ids.name,"        rd "+ids.rd,
+    "        route-target import evpn "+ids.rt,"        route-target export evpn "+ids.rt,
+    "        mpls control-word","        pseudowire "+ids.pw,
+    "            evpn vpws id local "+ids.vid+" remote "+ids.vid,"            exit","        exit","    exit","!");
+  return L.join("\n");
+}
+// A local patch's config: both subints + a local patch-panel (connector 2 = the peer). No BGP.
+function _localPatchCfg(lp, pdefs){
+  const L=[];
+  const aFull=`${lp.A_Interface}.${lp.A_SubInt}`, bFull=`${lp.B_Interface}.${lp.B_SubInt}`;
+  const name=(lp.Customer||"")+"-"+lp.CID;
+  L.push("patch panel","    patch "+name);
+  if(lp.A_CircuitState==="Shutdown") L.push("        shutdown");
+  L.push("        connector 1 interface "+aFull,"        connector 2 interface "+bFull,"        exit","    exit","!");
+  for(const e of ["A","B"]){
+    const full=`${lp[e+"_Interface"]}.${lp[e+"_SubInt"]}`, pol=lp[e+"_Policer"];
+    const refl=lp[e+"_Reflector"]==="Enabled", lacp=lp[e+"_LacpPassthrough"]==="Enabled";
+    if(pol && pdefs[pol]) L.push(`policy-map type quality-of-service ${pol}`,"  class class-default",
+      `    police cir ${pdefs[pol].cir} Mbps bc ${pdefs[pol].bc} bytes`,"    exit","  exit");
+    L.push("interface  "+full);
+    if(pol) L.push("  service-policy type qos input "+pol);
+    L.push("    description "+(lp.Customer||"")+" "+lp.CID);
+    L.push(..._encapLines(lp[e+"_Encap"]||"match-1-and-preserve", lp[e+"_VlanTag"], lp[e+"_InnerVlanTag"]));
+    L.push("    exit");
+    if(refl) L.push("    monitor ethernet reflectors","    reflector interface "+full,"    direction out","    mac swap","    exit");
+    if(lacp) L.push("    interface "+full,"    l2-protocol forwarding profile lacp","    exit");
+    L.push("!");
+  }
+  return L.join("\n");
+}
+function renderDeviceConfig(serial, circuits, patches, pdefs){
+  const blocks=[];
+  (circuits||[]).forEach(c=>{ if((c.Status||"")!=="Deployed") return;
+    ["A","B"].forEach(e=>{ if(String(c[e+"_Device"]||"")===serial) blocks.push(_vpwsEndpointCfg(c,e,pdefs)); }); });
+  (patches||[]).forEach(lp=>{ if((lp.Status||"")==="Deployed" && String(lp.Device||"")===serial) blocks.push(_localPatchCfg(lp,pdefs)); });
+  const head="! ===== "+devName(serial)+" ("+serial+") — Net Provisioner expected config =====\n"
+    +"! DR view rendered in-browser; paste into the switch if the pipeline is unavailable.\n!\n";
+  return blocks.length ? head+blocks.join("\n") : head+"! (no Deployed circuits or local patches on this switch)";
+}
+let _CFG_PDEFS={}, _CFG_LP=[];
+async function openConfigView(){
+  try{ _CFG_PDEFS=await Data.policerDefs(); }catch(e){ _CFG_PDEFS={}; }
+  try{ _CFG_LP=await Data.localPatches(); }catch(e){ _CFG_LP=[]; }
+  if(!CIRCUITS.length){ try{ CIRCUITS=await Data.circuits(); }catch(e){} }
+  const devs=new Set();
+  CIRCUITS.forEach(c=>{ if((c.Status||"")==="Deployed"){["A","B"].forEach(e=>{ if(c[e+"_Device"]) devs.add(String(c[e+"_Device"])); });} });
+  _CFG_LP.forEach(lp=>{ if((lp.Status||"")==="Deployed" && lp.Device) devs.add(String(lp.Device)); });
+  const list=[...devs].sort((a,b)=>devName(a).localeCompare(devName(b),undefined,{numeric:true}));
+  $("#cfgDev").innerHTML=`<option value="">— select switch —</option>`+list.map(s=>`<option value="${esc(s)}">${esc(devName(s))}</option>`).join("");
+  $("#cfgOut").textContent=list.length?"Select a switch to render its expected config.":"No Deployed circuits or local patches.";
+  $("#cfgOverlay").classList.add("open");
+}
+function renderConfigInto(){
+  const s=$("#cfgDev").value;
+  $("#cfgOut").textContent = s ? renderDeviceConfig(s, CIRCUITS, _CFG_LP, _CFG_PDEFS) : "Select a switch to render its expected config.";
+}
+function wireCfg(){
+  $("#cfgBtn").onclick=openConfigView;
+  $("#cfgClose").onclick=()=>$("#cfgOverlay").classList.remove("open");
+  $("#cfgOverlay").addEventListener("mousedown",e=>{ if(e.target===e.currentTarget) e.currentTarget.classList.remove("open"); });
+  $("#cfgDev").onchange=renderConfigInto;
+  $("#cfgCopy").onclick=async()=>{ try{ await navigator.clipboard.writeText($("#cfgOut").textContent); $("#cfgCopy").textContent="Copied!"; setTimeout(()=>$("#cfgCopy").textContent="Copy",1200);}catch(e){ alert("Copy failed — select the text manually."); } };
+}
 async function startApp(){
   $("#authGate").classList.remove("show"); $("#app").classList.add("show");
   const acct=DEMO?null:(msalInstance.getActiveAccount()||msalInstance.getAllAccounts()[0]);
@@ -1138,7 +1286,7 @@ function wireUi(){
 }
 
 document.addEventListener("DOMContentLoaded",async()=>{
-  wireUi(); wireBulk(); wireLp();
+  wireUi(); wireBulk(); wireLp(); wireCfg();
   if(DEMO){ await startApp(); return; }
   initMsal();
   const resp=await msalInstance.handleRedirectPromise().catch(e=>{console.error(e);return null;});
