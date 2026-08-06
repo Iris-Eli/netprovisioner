@@ -250,7 +250,7 @@
     <div class="foot">
       <button class="ghost danger" id="deleteBtn" style="display:none">Delete circuit</button>
       <span class="muted" id="valMsg"></span>
-      <div style="display:flex;gap:10px"><button class="ghost" id="cancelBtn">Cancel</button><button class="ghost" id="saveBtn">Save</button><button class="primary" id="saveDeployBtn">Save &amp; Deploy</button></div>
+      <div style="display:flex;gap:10px"><button class="ghost" id="cfgCircuitBtn" title="Show the EOS commands this circuit needs on each switch">📄 Config</button><button class="ghost" id="cancelBtn">Cancel</button><button class="ghost" id="saveBtn">Save</button><button class="primary" id="saveDeployBtn">Save &amp; Deploy</button></div>
     </div>
   </div>
 </div>
@@ -308,15 +308,15 @@
     <div class="foot">
       <button class="ghost danger" id="lpDeleteBtn" style="display:none">Delete patch</button>
       <span class="muted" id="lpValMsg"></span>
-      <div style="display:flex;gap:10px"><button class="ghost" id="lpCancelBtn">Cancel</button><button class="ghost" id="lpSaveBtn">Save</button><button class="primary" id="lpSaveDeployBtn">Save &amp; Deploy</button></div>
+      <div style="display:flex;gap:10px"><button class="ghost" id="lpCfgBtn" title="Show the EOS commands this local patch needs on the switch">📄 Config</button><button class="ghost" id="lpCancelBtn">Cancel</button><button class="ghost" id="lpSaveBtn">Save</button><button class="primary" id="lpSaveDeployBtn">Save &amp; Deploy</button></div>
     </div>
   </div>
 </div>
 <div class="overlay" id="cfgOverlay">
   <div class="modal wide">
-    <h2>Expected Switch Config <span class="muted" style="font-size:12px;font-weight:400">— DR view, rendered in-browser (works if the pipeline is down)</span></h2>
+    <h2 id="cfgTitle">Expected Config <span class="muted" style="font-size:12px;font-weight:400">— rendered in-browser (works if the pipeline is down)</span></h2>
     <div class="body">
-      <div class="field" style="max-width:420px"><label>Switch</label><select id="cfgDev"></select>
+      <div class="field" id="cfgPickWrap" style="max-width:420px"><label>Switch</label><select id="cfgDev"></select>
         <div class="hint">The exact EOS config the connector would push — paste into the switch CLI if you must bypass automation.</div></div>
       <pre id="cfgOut" style="white-space:pre;overflow:auto;max-height:60vh;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:8px;padding:12px;font-size:12.5px;line-height:1.45"></pre>
     </div>
@@ -738,13 +738,16 @@ async function fillForm(c){
 //   the engineer chose Disconnected to deploy a teardown) -> the flow fires -> deploy-static
 //   -> change control. The connector clears NeedsDeploy=No when it stamps, so the flow
 //   won't loop on its own write-back.
+// The circuit's config-shaping fields from the form (shared by save + the per-circuit config view).
+function vpwsFormFields(){ const g=id=>$(id).value; return {
+  CID:g("#f_cid"),Customer:g("#f_customer"),ServiceId:Number(g("#f_serviceid"))||null,ServiceType:g("#f_svctype"),ENNI:g("#f_enni"),
+  A_Device:g("#f_A_dev"),A_Interface:g("#f_A_int"),A_SubInt:Number(g("#f_A_sub"))||null,A_VlanTag:Number(g("#f_A_vlan"))||null,A_InnerVlanTag:Number(g("#f_A_ivlan"))||null,A_Policer:g("#f_A_pol"),A_Encap:g("#f_A_enc"),A_Reflector:g("#f_A_ref"),A_LacpPassthrough:g("#f_A_lacp"),
+  B_Device:g("#f_B_dev"),B_Interface:g("#f_B_int"),B_SubInt:Number(g("#f_B_sub"))||null,B_VlanTag:Number(g("#f_B_vlan"))||null,B_InnerVlanTag:Number(g("#f_B_ivlan"))||null,B_Policer:g("#f_B_pol"),B_Encap:g("#f_B_enc"),B_Reflector:g("#f_B_ref"),B_LacpPassthrough:g("#f_B_lacp"),
+}; }
 async function save(deploy){
   if(!validate())return; if(!checkDuplicate()&&!confirm("Duplicate interface/subinterface detected. Save anyway?"))return;
-  const g=id=>$(id).value;
-  const chosen=g("#f_status")||"Planned";
-  const rec={CID:g("#f_cid"),Customer:g("#f_customer"),ServiceId:Number(g("#f_serviceid"))||null,ServiceType:g("#f_svctype"),ENNI:g("#f_enni"),
-    A_Device:g("#f_A_dev"),A_Interface:g("#f_A_int"),A_SubInt:Number(g("#f_A_sub"))||null,A_VlanTag:Number(g("#f_A_vlan"))||null,A_InnerVlanTag:Number(g("#f_A_ivlan"))||null,A_Policer:g("#f_A_pol"),A_Encap:g("#f_A_enc"),A_Reflector:g("#f_A_ref"),A_LacpPassthrough:g("#f_A_lacp"),
-    B_Device:g("#f_B_dev"),B_Interface:g("#f_B_int"),B_SubInt:Number(g("#f_B_sub"))||null,B_VlanTag:Number(g("#f_B_vlan"))||null,B_InnerVlanTag:Number(g("#f_B_ivlan"))||null,B_Policer:g("#f_B_pol"),B_Encap:g("#f_B_enc"),B_Reflector:g("#f_B_ref"),B_LacpPassthrough:g("#f_B_lacp"),
+  const chosen=$("#f_status").value||"Planned";
+  const rec={...vpwsFormFields(),
     Status: deploy ? (chosen==="Disconnected"?"Disconnected":"Deployed") : chosen,
     NeedsDeploy: deploy ? "Yes" : "No"};
   if(rec.Status==="Disconnected") rec.DisconnectedDate=new Date().toISOString();
@@ -1046,12 +1049,15 @@ function lpValidate(){
     $("#lpValMsg").textContent="End A and End B can't be the same interface + sub-interface.";$("#lpValMsg").style.color="var(--danger)";return false;}
   $("#lpValMsg").textContent="";return true;
 }
+function lpFormFields(){ const g=id=>$(id).value; return {
+  CID:g("#lp_cid"),Customer:g("#lp_customer"),ServiceType:g("#lp_svctype"),Device:g("#lp_dev"),
+  A_Interface:g("#lp_A_int"),A_SubInt:Number(g("#lp_A_sub"))||null,A_VlanTag:Number(g("#lp_A_vlan"))||null,A_InnerVlanTag:Number(g("#lp_A_ivlan"))||null,A_Encap:g("#lp_A_enc"),A_Policer:g("#lp_A_pol"),A_Reflector:g("#lp_A_ref"),A_LacpPassthrough:g("#lp_A_lacp"),
+  B_Interface:g("#lp_B_int"),B_SubInt:Number(g("#lp_B_sub"))||null,B_VlanTag:Number(g("#lp_B_vlan"))||null,B_InnerVlanTag:Number(g("#lp_B_ivlan"))||null,B_Encap:g("#lp_B_enc"),B_Policer:g("#lp_B_pol"),B_Reflector:g("#lp_B_ref"),B_LacpPassthrough:g("#lp_B_lacp"),
+}; }
 async function saveLP(deploy){
   if(!lpValidate())return;
-  const g=id=>$(id).value; const chosen=g("#lp_status")||"Planned";
-  const rec={CID:g("#lp_cid"),Customer:g("#lp_customer"),ServiceType:g("#lp_svctype"),Device:g("#lp_dev"),
-    A_Interface:g("#lp_A_int"),A_SubInt:Number(g("#lp_A_sub"))||null,A_VlanTag:Number(g("#lp_A_vlan"))||null,A_InnerVlanTag:Number(g("#lp_A_ivlan"))||null,A_Encap:g("#lp_A_enc"),A_Policer:g("#lp_A_pol"),A_Reflector:g("#lp_A_ref"),A_LacpPassthrough:g("#lp_A_lacp"),
-    B_Interface:g("#lp_B_int"),B_SubInt:Number(g("#lp_B_sub"))||null,B_VlanTag:Number(g("#lp_B_vlan"))||null,B_InnerVlanTag:Number(g("#lp_B_ivlan"))||null,B_Encap:g("#lp_B_enc"),B_Policer:g("#lp_B_pol"),B_Reflector:g("#lp_B_ref"),B_LacpPassthrough:g("#lp_B_lacp"),
+  const chosen=$("#lp_status").value||"Planned";
+  const rec={...lpFormFields(),
     Status: deploy ? (chosen==="Disconnected"?"Disconnected":"Deployed") : chosen,
     NeedsDeploy: deploy ? "Yes" : "No"};
   if(rec.Status==="Disconnected") rec.DisconnectedDate=new Date().toISOString();
@@ -1073,6 +1079,7 @@ function wireLp(){
   $("#lpSearch").oninput=drawLP; document.querySelectorAll("[data-lpcol]").forEach(i=>i.addEventListener("input",drawLP));
   $("#lpCancelBtn").onclick=()=>{ LP_EDIT_ID=null; $("#lpOverlay").classList.remove("open"); };
   $("#lpSaveBtn").onclick=()=>saveLP(false); $("#lpSaveDeployBtn").onclick=()=>saveLP(true);
+  $("#lpCfgBtn").onclick=()=>showLpConfig(lpFormFields());
   $("#lp_status").onchange=()=>{ $("#lpStatusHint").textContent=STATUS_HINT[$("#lp_status").value]||""; };
   $("#lpOverlay").addEventListener("mousedown",e=>{ if(e.target===e.currentTarget){ LP_EDIT_ID=null; e.currentTarget.classList.remove("open"); } });
   $("#lpDeleteBtn").onclick=async()=>{ if(!LP_EDIT_ID)return; const cid=$("#lp_cid").value||LP_EDIT_ID;
@@ -1192,8 +1199,44 @@ function renderDeviceConfig(serial, circuits, patches, pdefs){
     +"! DR view rendered in-browser; paste into the switch if the pipeline is unavailable.\n!\n";
   return blocks.length ? head+blocks.join("\n") : head+"! (no Deployed circuits or local patches on this switch)";
 }
+// Per-circuit view: exactly the commands THIS circuit needs, grouped by the switch each end
+// lands on (VPWS spans two switches; a local patch is one).
+function renderCircuitConfig(c, pdefs){
+  const out=["! ===== Circuit "+c.CID+" ("+(c.Customer||"")+") =====",
+    "! Per-circuit config — the commands this circuit needs on each switch.","!"];
+  let any=false;
+  for(const e of ["A","B"]){ if(c[e+"_Device"]){ any=true;
+    out.push("! --- Endpoint "+e+": switch "+devName(c[e+"_Device"])+" ("+c[e+"_Device"]+") ---");
+    out.push(_vpwsEndpointCfg(c,e,pdefs),""); } }
+  if(!any) out.push("! (no endpoints configured yet)");
+  return out.join("\n");
+}
+function renderLocalPatchConfigView(lp, pdefs){
+  return "! ===== Local Patch "+lp.CID+" ("+(lp.Customer||"")+") on "+devName(lp.Device)+" ("+(lp.Device||"?")+") =====\n"
+    +"! Per-patch config — both sub-interfaces + the local cross-connect on this switch.\n!\n"
+    +_localPatchCfg(lp, pdefs);
+}
+// Single-item mode of the config overlay: hide the switch picker, just show the text.
+function showItemConfig(titleHtml, text){
+  $("#cfgPickWrap").style.display="none";
+  $("#cfgTitle").innerHTML=titleHtml;
+  $("#cfgOut").textContent=text;
+  $("#cfgOverlay").classList.add("open");
+}
+async function showCircuitConfig(c){
+  let pdefs={}; try{ pdefs=await Data.policerDefs(); }catch(e){}
+  showItemConfig('Circuit Config <span class="muted" style="font-size:12px;font-weight:400">— '+esc(c.CID||"")+'</span>',
+                 renderCircuitConfig(c, pdefs));
+}
+async function showLpConfig(lp){
+  let pdefs={}; try{ pdefs=await Data.policerDefs(); }catch(e){}
+  showItemConfig('Local Patch Config <span class="muted" style="font-size:12px;font-weight:400">— '+esc(lp.CID||"")+'</span>',
+                 renderLocalPatchConfigView(lp, pdefs));
+}
 let _CFG_PDEFS={}, _CFG_LP=[];
 async function openConfigView(){
+  $("#cfgPickWrap").style.display="";
+  $("#cfgTitle").innerHTML='Expected Switch Config <span class="muted" style="font-size:12px;font-weight:400">— rendered in-browser (works if the pipeline is down)</span>';
   try{ _CFG_PDEFS=await Data.policerDefs(); }catch(e){ _CFG_PDEFS={}; }
   try{ _CFG_LP=await Data.localPatches(); }catch(e){ _CFG_LP=[]; }
   if(!CIRCUITS.length){ try{ CIRCUITS=await Data.circuits(); }catch(e){} }
@@ -1234,6 +1277,7 @@ function wireUi(){
   $("#overlay").addEventListener("mousedown",e=>{ if(e.target===e.currentTarget){ EDIT_ID=null; e.currentTarget.classList.remove("open"); } });
   $("#dashOverlay").addEventListener("mousedown",e=>{ if(e.target===e.currentTarget) e.currentTarget.classList.remove("open"); });
   $("#saveBtn").onclick=()=>save(false); $("#saveDeployBtn").onclick=()=>save(true);
+  $("#cfgCircuitBtn").onclick=()=>showCircuitConfig(vpwsFormFields());
   $("#refreshBtn").onclick=renderTable; $("#search").oninput=draw;   // draw = filter cached data, no re-fetch
   document.querySelectorAll(".filters input[data-col]").forEach(i=>i.addEventListener("input",draw));
   $("#reflectorBtn").onclick=()=>{ REFLECTOR_ONLY=!REFLECTOR_ONLY; draw(); };
