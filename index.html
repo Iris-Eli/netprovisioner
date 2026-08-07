@@ -116,6 +116,9 @@
   .bulkdel{cursor:pointer;border:none;background:transparent;color:var(--danger);font-size:15px;line-height:1}
   #circuitsBody a.cidlink{color:var(--accent-primary);font-weight:700;text-decoration:none;cursor:pointer}
   #circuitsBody a.cidlink:hover{text-decoration:underline}
+  .cfgbox{border:1px solid var(--border-color);border-radius:8px;margin-bottom:14px;overflow:hidden}
+  .cfgbox-hd{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 12px;background:var(--bg-tertiary);border-bottom:1px solid var(--border-color);font-weight:600;font-size:13px}
+  .cfgbox-pre{white-space:pre;overflow:auto;max-height:46vh;margin:0;padding:12px;background:var(--bg-secondary);color:var(--text-primary);font-size:12.5px;line-height:1.45}
   /* --- Mobile / small screens --- */
   @media (max-width:700px){
     header.app{gap:10px;padding:8px 12px;flex-wrap:wrap}
@@ -318,10 +321,10 @@
     <div class="body">
       <div class="field" id="cfgPickWrap" style="max-width:420px"><label>Switch</label><select id="cfgDev"></select>
         <div class="hint">The exact EOS config the connector would push — paste into the switch CLI if you must bypass automation.</div></div>
-      <pre id="cfgOut" style="white-space:pre;overflow:auto;max-height:60vh;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:8px;padding:12px;font-size:12.5px;line-height:1.45"></pre>
+      <div id="cfgBoxes"></div>
     </div>
-    <div class="foot"><span class="muted" style="font-size:12px">Generated from cached SharePoint data — no CVaaS/Actions needed.</span>
-      <div style="display:flex;gap:10px"><button class="ghost" id="cfgCopy">Copy</button><button class="ghost" id="cfgClose">Close</button></div></div>
+    <div class="foot"><span class="muted" style="font-size:12px">Generated from cached SharePoint data — no CVaaS/Actions needed. One box per switch — copy each into its switch.</span>
+      <div style="display:flex;gap:10px"><button class="ghost" id="cfgClose">Close</button></div></div>
   </div>
 </div>
 <datalist id="dl_customers"></datalist>
@@ -1201,38 +1204,31 @@ function renderDeviceConfig(serial, circuits, patches, pdefs){
 }
 // Per-circuit view: exactly the commands THIS circuit needs, grouped by the switch each end
 // lands on (VPWS spans two switches; a local patch is one).
-function renderCircuitConfig(c, pdefs){
-  const out=["! ===== Circuit "+c.CID+" ("+(c.Customer||"")+") =====",
-    "! Per-circuit config — the commands this circuit needs on each switch.","!"];
-  let any=false;
-  for(const e of ["A","B"]){ if(c[e+"_Device"]){ any=true;
-    out.push("! --- Endpoint "+e+": switch "+devName(c[e+"_Device"])+" ("+c[e+"_Device"]+") ---");
-    out.push(_vpwsEndpointCfg(c,e,pdefs),""); } }
-  if(!any) out.push("! (no endpoints configured yet)");
-  return out.join("\n");
+// Per-circuit config as SEPARATE boxes — one per switch, so each is easy to see + copy on
+// its own. VPWS => a box for the A switch and a box for the B switch; local patch => one box.
+function circuitConfigBoxes(c, pdefs){
+  const boxes=[];
+  for(const e of ["A","B"]){ if(c[e+"_Device"]){
+    boxes.push({title:"Switch "+devName(c[e+"_Device"])+"  ("+c[e+"_Device"]+")  ·  Endpoint "+e,
+      text:"! Circuit "+c.CID+" ("+(c.Customer||"")+") — Endpoint "+e+" on "+devName(c[e+"_Device"])+"\n!\n"+_vpwsEndpointCfg(c,e,pdefs)}); } }
+  return boxes;
 }
-function renderLocalPatchConfigView(lp, pdefs){
-  return "! ===== Local Patch "+lp.CID+" ("+(lp.Customer||"")+") on "+devName(lp.Device)+" ("+(lp.Device||"?")+") =====\n"
-    +"! Per-patch config — both sub-interfaces + the local cross-connect on this switch.\n!\n"
-    +_localPatchCfg(lp, pdefs);
+function localPatchConfigBoxes(lp, pdefs){
+  return [{title:"Switch "+devName(lp.Device)+"  ("+(lp.Device||"?")+")",
+    text:"! Local Patch "+lp.CID+" ("+(lp.Customer||"")+")\n!\n"+_localPatchCfg(lp,pdefs)}];
 }
-// Single-item mode of the config overlay: hide the switch picker, just show the text.
-function showItemConfig(titleHtml, text){
-  $("#cfgPickWrap").style.display="none";
+const _cfgBoxHTML=(title,text)=>`<div class="cfgbox"><div class="cfgbox-hd"><span>${esc(title)}</span><button class="ghost cfgbox-copy">Copy</button></div><pre class="cfgbox-pre">${esc(text)}</pre></div>`;
+const _cfgMsg=m=>`<div class="muted" style="padding:12px">${esc(m)}</div>`;
+function renderCfgBoxes(titleHtml, boxes){
   $("#cfgTitle").innerHTML=titleHtml;
-  $("#cfgOut").textContent=text;
-  $("#cfgOverlay").classList.add("open");
+  $("#cfgBoxes").innerHTML = boxes.length ? boxes.map(b=>_cfgBoxHTML(b.title,b.text)).join("") : _cfgMsg("Nothing to render.");
 }
-async function showCircuitConfig(c){
-  let pdefs={}; try{ pdefs=await Data.policerDefs(); }catch(e){}
-  showItemConfig('Circuit Config <span class="muted" style="font-size:12px;font-weight:400">— '+esc(c.CID||"")+'</span>',
-                 renderCircuitConfig(c, pdefs));
-}
-async function showLpConfig(lp){
-  let pdefs={}; try{ pdefs=await Data.policerDefs(); }catch(e){}
-  showItemConfig('Local Patch Config <span class="muted" style="font-size:12px;font-weight:400">— '+esc(lp.CID||"")+'</span>',
-                 renderLocalPatchConfigView(lp, pdefs));
-}
+// Single-item mode: hide the switch picker, show this circuit/patch's per-switch boxes.
+function showItemBoxes(titleHtml, boxes){ $("#cfgPickWrap").style.display="none"; renderCfgBoxes(titleHtml, boxes); $("#cfgOverlay").classList.add("open"); }
+async function showCircuitConfig(c){ let pd={}; try{ pd=await Data.policerDefs(); }catch(e){}
+  showItemBoxes('Circuit Config <span class="muted" style="font-size:12px;font-weight:400">— '+esc(c.CID||"")+' · one box per switch</span>', circuitConfigBoxes(c,pd)); }
+async function showLpConfig(lp){ let pd={}; try{ pd=await Data.policerDefs(); }catch(e){}
+  showItemBoxes('Local Patch Config <span class="muted" style="font-size:12px;font-weight:400">— '+esc(lp.CID||"")+'</span>', localPatchConfigBoxes(lp,pd)); }
 let _CFG_PDEFS={}, _CFG_LP=[];
 async function openConfigView(){
   $("#cfgPickWrap").style.display="";
@@ -1245,19 +1241,22 @@ async function openConfigView(){
   _CFG_LP.forEach(lp=>{ if((lp.Status||"")==="Deployed" && lp.Device) devs.add(String(lp.Device)); });
   const list=[...devs].sort((a,b)=>devName(a).localeCompare(devName(b),undefined,{numeric:true}));
   $("#cfgDev").innerHTML=`<option value="">— select switch —</option>`+list.map(s=>`<option value="${esc(s)}">${esc(devName(s))}</option>`).join("");
-  $("#cfgOut").textContent=list.length?"Select a switch to render its expected config.":"No Deployed circuits or local patches.";
+  $("#cfgBoxes").innerHTML=_cfgMsg(list.length?"Select a switch to render its full expected config.":"No Deployed circuits or local patches.");
   $("#cfgOverlay").classList.add("open");
 }
 function renderConfigInto(){
   const s=$("#cfgDev").value;
-  $("#cfgOut").textContent = s ? renderDeviceConfig(s, CIRCUITS, _CFG_LP, _CFG_PDEFS) : "Select a switch to render its expected config.";
+  $("#cfgBoxes").innerHTML = s ? _cfgBoxHTML("Switch "+devName(s)+"  ("+s+")", renderDeviceConfig(s, CIRCUITS, _CFG_LP, _CFG_PDEFS)) : _cfgMsg("Select a switch to render its full expected config.");
 }
 function wireCfg(){
   $("#cfgBtn").onclick=openConfigView;
   $("#cfgClose").onclick=()=>$("#cfgOverlay").classList.remove("open");
   $("#cfgOverlay").addEventListener("mousedown",e=>{ if(e.target===e.currentTarget) e.currentTarget.classList.remove("open"); });
   $("#cfgDev").onchange=renderConfigInto;
-  $("#cfgCopy").onclick=async()=>{ try{ await navigator.clipboard.writeText($("#cfgOut").textContent); $("#cfgCopy").textContent="Copied!"; setTimeout(()=>$("#cfgCopy").textContent="Copy",1200);}catch(e){ alert("Copy failed — select the text manually."); } };
+  // per-box Copy (delegated)
+  $("#cfgBoxes").addEventListener("click",async e=>{ const b=e.target.closest(".cfgbox-copy"); if(!b)return;
+    const pre=b.closest(".cfgbox").querySelector(".cfgbox-pre");
+    try{ await navigator.clipboard.writeText(pre.textContent); b.textContent="Copied!"; setTimeout(()=>b.textContent="Copy",1200);}catch(err){ alert("Copy failed — select the text manually."); } });
 }
 async function startApp(){
   $("#authGate").classList.remove("show"); $("#app").classList.add("show");
