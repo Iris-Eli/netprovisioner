@@ -123,6 +123,11 @@
   .cfgbox{border:1px solid var(--border-color);border-radius:8px;margin-bottom:14px;overflow:hidden}
   .cfgbox-hd{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 12px;background:var(--bg-tertiary);border-bottom:1px solid var(--border-color);font-weight:600;font-size:13px}
   .cfgbox-pre{white-space:pre;overflow:auto;max-height:46vh;margin:0;padding:12px;background:var(--bg-secondary);color:var(--text-primary);font-size:12.5px;line-height:1.45}
+  .diffpre{white-space:normal;padding:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .diffpre .dl{white-space:pre;padding:0 12px;font-size:12.5px;line-height:1.5}
+  .diffpre .dadd{background:rgba(46,160,67,.16);color:#3fb950}
+  .diffpre .ddel{background:rgba(248,81,73,.15);color:#f85149}
+  .diffpre .dctx{color:var(--text-secondary);opacity:.85}
   /* --- Mobile / small screens --- */
   @media (max-width:700px){
     header.app{gap:10px;padding:8px 12px;flex-wrap:wrap}
@@ -257,7 +262,7 @@
     <div class="foot">
       <button class="ghost danger" id="deleteBtn" style="display:none">Delete circuit</button>
       <span class="muted" id="valMsg"></span>
-      <div style="display:flex;gap:10px"><button class="ghost" id="cfgCircuitBtn" title="Show the EOS commands this circuit needs on each switch">📄 Config</button><button class="ghost" id="cancelBtn">Cancel</button><button class="ghost" id="saveBtn">Save</button><button class="primary" id="saveDeployBtn">Save &amp; Deploy</button></div>
+      <div style="display:flex;gap:10px"><button class="ghost" id="cfgCircuitBtn" title="Show the EOS commands this circuit needs on each switch">📄 Config</button><button class="ghost" id="diffCircuitBtn" title="Diff the current values against the last deployed config">Δ Diff</button><button class="ghost" id="cancelBtn">Cancel</button><button class="ghost" id="saveBtn">Save</button><button class="primary" id="saveDeployBtn">Save &amp; Deploy</button></div>
     </div>
   </div>
 </div>
@@ -315,7 +320,7 @@
     <div class="foot">
       <button class="ghost danger" id="lpDeleteBtn" style="display:none">Delete patch</button>
       <span class="muted" id="lpValMsg"></span>
-      <div style="display:flex;gap:10px"><button class="ghost" id="lpCfgBtn" title="Show the EOS commands this local patch needs on the switch">📄 Config</button><button class="ghost" id="lpCancelBtn">Cancel</button><button class="ghost" id="lpSaveBtn">Save</button><button class="primary" id="lpSaveDeployBtn">Save &amp; Deploy</button></div>
+      <div style="display:flex;gap:10px"><button class="ghost" id="lpCfgBtn" title="Show the EOS commands this local patch needs on the switch">📄 Config</button><button class="ghost" id="lpDiffBtn" title="Diff the current values against the last deployed config">Δ Diff</button><button class="ghost" id="lpCancelBtn">Cancel</button><button class="ghost" id="lpSaveBtn">Save</button><button class="primary" id="lpSaveDeployBtn">Save &amp; Deploy</button></div>
     </div>
   </div>
 </div>
@@ -659,7 +664,7 @@ function draw(){
     return `<tr class="${failed?'failed':''}"${failed?` title="${esc(c.DeployStatusDetail||'Deploy failed')}"`:''}><td><a href="#" class="cidlink" data-id="${esc(c.__id)}" title="Edit ${esc(c.CID)}">${esc(c.CID)}</a></td><td>${esc(c.Customer)}</td><td>${esc(c.ServiceType)}</td>
     <td>${esc(devName(c.A_Device))} <span class="muted">${esc(c.A_Interface)}</span></td><td>${esc(devName(c.B_Device))} <span class="muted">${esc(c.B_Interface)}</span></td>
     <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td class="stick col-status">${statusCell(c)}</td>
-    <td class="stick col-edit"><button class="ghost editBtn" data-id="${esc(c.__id)}">Edit</button></td></tr>`;}).join("")
+    <td class="stick col-edit">${(c.DeployStatus==="Pending"||c.LastDeployedConfig)?`<button class="ghost diffBtn" data-id="${esc(c.__id)}" title="Show the config this push changes vs the last deployed">Δ&nbsp;Diff</button> `:""}<button class="ghost editBtn" data-id="${esc(c.__id)}">Edit</button></td></tr>`;}).join("")
     || `<tr><td colspan="8" class="muted" style="padding:24px;text-align:center">No circuits match.</td></tr>`;
 }
 // Download the current (filtered) view as CSV — general reporting, incl. the reflector report.
@@ -1024,7 +1029,7 @@ function drawLP(){
     <td>${esc(devName(c.Device))}</td>
     <td><span class="muted">${esc(c.A_Interface)}.${esc(c.A_SubInt)}</span></td><td><span class="muted">${esc(c.B_Interface)}.${esc(c.B_SubInt)}</span></td>
     <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td class="stick col-status">${lpStatusCell(c)}</td>
-    <td class="stick col-edit"><button class="ghost editBtn" data-lpid="${esc(c.__id)}">Edit</button></td></tr>`;}).join("")
+    <td class="stick col-edit">${(c.DeployStatus==="Pending"||c.LastDeployedConfig)?`<button class="ghost diffBtn" data-lpid="${esc(c.__id)}" title="Show the config this push changes vs the last deployed">Δ&nbsp;Diff</button> `:""}<button class="ghost editBtn" data-lpid="${esc(c.__id)}">Edit</button></td></tr>`;}).join("")
     || `<tr><td colspan="9" class="muted" style="padding:24px;text-align:center">No local patches yet.</td></tr>`;
 }
 async function openLpNew(){ LP_EDIT_ID=null; $("#lpModalTitle").textContent="New Local Patch";
@@ -1087,6 +1092,8 @@ function wireLp(){
   $("#lpCancelBtn").onclick=()=>{ LP_EDIT_ID=null; $("#lpOverlay").classList.remove("open"); };
   $("#lpSaveBtn").onclick=()=>saveLP(false); $("#lpSaveDeployBtn").onclick=()=>saveLP(true);
   $("#lpCfgBtn").onclick=()=>showLpConfig(lpFormFields());
+  $("#lpDiffBtn").onclick=()=>{ const src=LP.find(x=>String(x.__id)===String(LP_EDIT_ID))||{};
+    showLpDiff(Object.assign({}, lpFormFields(), {LastDeployedConfig:src.LastDeployedConfig})); };
   $("#lp_status").onchange=()=>{ $("#lpStatusHint").textContent=STATUS_HINT[$("#lp_status").value]||""; };
   $("#lpOverlay").addEventListener("mousedown",e=>{ if(e.target===e.currentTarget){ LP_EDIT_ID=null; e.currentTarget.classList.remove("open"); } });
   $("#lpDeleteBtn").onclick=async()=>{ if(!LP_EDIT_ID)return; const cid=$("#lp_cid").value||LP_EDIT_ID;
@@ -1096,7 +1103,9 @@ function wireLp(){
     }catch(e){ alert("Delete failed: "+e.message); return; }
     LP_EDIT_ID=null; $("#lpOverlay").classList.remove("open"); renderLP(); };
   // CID link + Edit button + inline status on the LP table
-  $("#lpBody").addEventListener("click",e=>{ const el=e.target.closest("a.cidlink, button.editBtn"); if(!el)return; e.preventDefault(); openLpEdit(el.getAttribute("data-lpid")); });
+  $("#lpBody").addEventListener("click",e=>{ const df=e.target.closest("button.diffBtn");
+    if(df){ e.preventDefault(); const lp=LP.find(x=>String(x.__id)===String(df.getAttribute("data-lpid"))); if(lp) showLpDiff(lp); return; }
+    const el=e.target.closest("a.cidlink, button.editBtn"); if(!el)return; e.preventDefault(); openLpEdit(el.getAttribute("data-lpid")); });
   $("#lpBody").addEventListener("change",async e=>{ const sel=e.target.closest("select.statusSel"); if(!sel)return;
     const id=sel.getAttribute("data-lpid"), status=sel.value;
     try{ await Data.setLPStatus(id,status); if(status!=="Planned"){ const c=LP.find(x=>String(x.__id)===String(id)); await Data.queueDeploy(c?c.CID:id); } }
@@ -1233,6 +1242,75 @@ async function showCircuitConfig(c){ let pd={}; try{ pd=await Data.policerDefs()
   showItemBoxes('Circuit Config <span class="muted" style="font-size:12px;font-weight:400">— '+esc(c.CID||"")+' · one box per switch</span>', circuitConfigBoxes(c,pd)); }
 async function showLpConfig(lp){ let pd={}; try{ pd=await Data.policerDefs(); }catch(e){}
   showItemBoxes('Local Patch Config <span class="muted" style="font-size:12px;font-weight:400">— '+esc(lp.CID||"")+'</span>', localPatchConfigBoxes(lp,pd)); }
+/* ===== Config DIFF (what a pending push changes vs the last deployed) =====
+   "before" = the connector's LastDeployedConfig snapshot (the config-shaping FIELD values as of
+   the last successful deploy); "after" = the circuit's current values. Both go through the SAME
+   in-browser renderer, so we compare like-for-like — no CVaaS call needed. A brand-new circuit
+   has no snapshot, so the whole config shows as added. */
+function _snapObj(c){ try{ return JSON.parse(c.LastDeployedConfig||"{}")||{}; }catch(e){ return {}; } }
+// LCS line diff -> [{t:'ctx'|'add'|'del', s}]
+function _lineDiff(a,b){
+  const A=(a||"").split("\n"), B=(b||"").split("\n"), n=A.length, m=B.length;
+  const dp=Array.from({length:n+1},()=>new Int32Array(m+1));
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--) dp[i][j]=A[i]===B[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+  const out=[]; let i=0,j=0;
+  while(i<n&&j<m){ if(A[i]===B[j]){out.push({t:"ctx",s:A[i]});i++;j++;}
+    else if(dp[i+1][j]>=dp[i][j+1]){out.push({t:"del",s:A[i]});i++;} else {out.push({t:"add",s:B[j]});j++;} }
+  while(i<n) out.push({t:"del",s:A[i++]});
+  while(j<m) out.push({t:"add",s:B[j++]});
+  return out;
+}
+function circuitDiffBoxes(c, pdefs){
+  const snap=_snapObj(c), hasBefore=Object.keys(snap).length>0;
+  const before=Object.assign({CID:c.CID, Customer:c.Customer}, snap);
+  const boxes=[];
+  for(const e of ["A","B"]){
+    const devA=c[e+"_Device"], devB=before[e+"_Device"];
+    if(!devA && !devB) continue;
+    const after=devA ? _vpwsEndpointCfg(c,e,pdefs) : "";
+    const bef  =(hasBefore && devB) ? _vpwsEndpointCfg(before,e,pdefs) : "";
+    const moved=devA && devB && String(devA)!==String(devB);
+    boxes.push({title:"Switch "+devName(devA||devB)+"  ·  Endpoint "+e+(moved?"  (moved from "+devName(devB)+")":""),
+                diff:_lineDiff(bef, after)});
+  }
+  return {boxes, hasBefore};
+}
+function _diffBoxHTML(title, diff){
+  const changed=diff.some(d=>d.t!=="ctx");
+  const body=diff.length ? diff.map(d=>{
+    const cls=d.t==="add"?"dadd":d.t==="del"?"ddel":"dctx", pfx=d.t==="add"?"+":d.t==="del"?"-":" ";
+    return `<div class="dl ${cls}">${esc(pfx+" "+d.s)}</div>`; }).join("")
+    : `<div class="muted" style="padding:8px">No config on this switch.</div>`;
+  return `<div class="cfgbox"><div class="cfgbox-hd"><span>${esc(title)}${changed?"":' · <span class="muted">unchanged</span>'}</span></div><div class="cfgbox-pre diffpre">${body}</div></div>`;
+}
+async function showCircuitDiff(c){
+  let pd={}; try{ pd=await Data.policerDefs(); }catch(e){}
+  const {boxes, hasBefore}=circuitDiffBoxes(c, pd);
+  const sub=hasBefore ? "current intent vs last deployed" : "new circuit — nothing deployed yet, entire config is new";
+  $("#cfgPickWrap").style.display="none";
+  $("#cfgTitle").innerHTML='Config Diff <span class="muted" style="font-size:12px;font-weight:400">— '+esc(c.CID||"")+' · '+sub+'</span>';
+  $("#cfgBoxes").innerHTML = boxes.length ? boxes.map(b=>_diffBoxHTML(b.title,b.diff)).join("") : _cfgMsg("Nothing to diff.");
+  $("#cfgOverlay").classList.add("open");
+}
+// Local patch: one switch, no BGP — same before/after machinery via _localPatchCfg.
+function lpDiffBoxes(lp, pdefs){
+  const snap=_snapObj(lp), hasBefore=Object.keys(snap).length>0;
+  const before=Object.assign({CID:lp.CID, Customer:lp.Customer}, snap);
+  const after=lp.Device ? _localPatchCfg(lp,pdefs) : "";
+  const bef  =(hasBefore && before.Device) ? _localPatchCfg(before,pdefs) : "";
+  const moved=lp.Device && before.Device && String(lp.Device)!==String(before.Device);
+  return {boxes:[{title:"Switch "+devName(lp.Device||before.Device)+(moved?"  (moved from "+devName(before.Device)+")":""),
+                  diff:_lineDiff(bef, after)}], hasBefore};
+}
+async function showLpDiff(lp){
+  let pd={}; try{ pd=await Data.policerDefs(); }catch(e){}
+  const {boxes, hasBefore}=lpDiffBoxes(lp, pd);
+  const sub=hasBefore ? "current intent vs last deployed" : "new local patch — nothing deployed yet, entire config is new";
+  $("#cfgPickWrap").style.display="none";
+  $("#cfgTitle").innerHTML='Config Diff <span class="muted" style="font-size:12px;font-weight:400">— '+esc(lp.CID||"")+' · '+sub+'</span>';
+  $("#cfgBoxes").innerHTML = boxes.map(b=>_diffBoxHTML(b.title,b.diff)).join("");
+  $("#cfgOverlay").classList.add("open");
+}
 let _CFG_PDEFS={}, _CFG_LP=[];
 async function openConfigView(){
   $("#cfgPickWrap").style.display="";
@@ -1281,6 +1359,9 @@ function wireUi(){
   $("#dashOverlay").addEventListener("mousedown",e=>{ if(e.target===e.currentTarget) e.currentTarget.classList.remove("open"); });
   $("#saveBtn").onclick=()=>save(false); $("#saveDeployBtn").onclick=()=>save(true);
   $("#cfgCircuitBtn").onclick=()=>showCircuitConfig(vpwsFormFields());
+  // Diff current form values vs the edited circuit's last-deployed snapshot (reflects unsaved edits).
+  $("#diffCircuitBtn").onclick=()=>{ const src=CIRCUITS.find(x=>String(x.__id)===String(EDIT_ID))||{};
+    showCircuitDiff(Object.assign({}, vpwsFormFields(), {LastDeployedConfig:src.LastDeployedConfig})); };
   $("#refreshBtn").onclick=renderTable; $("#search").oninput=draw;   // draw = filter cached data, no re-fetch
   document.querySelectorAll(".filters input[data-col]").forEach(i=>i.addEventListener("input",draw));
   $("#reflectorBtn").onclick=()=>{ REFLECTOR_ONLY=!REFLECTOR_ONLY; draw(); };
@@ -1324,6 +1405,8 @@ function wireUi(){
   });
   // Edit button OR the CID link per row -> open the modal pre-filled
   $("#circuitsBody").addEventListener("click",e=>{
+    const df=e.target.closest("button.diffBtn");
+    if(df){ e.preventDefault(); const c=CIRCUITS.find(x=>String(x.__id)===String(df.getAttribute("data-id"))); if(c) showCircuitDiff(c); return; }
     const el=e.target.closest("button.editBtn, a.cidlink"); if(!el)return;
     e.preventDefault();
     openEdit(el.getAttribute("data-id"));
