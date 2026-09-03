@@ -664,7 +664,7 @@ function draw(){
     return `<tr class="${failed?'failed':''}"${failed?` title="${esc(c.DeployStatusDetail||'Deploy failed')}"`:''}><td><a href="#" class="cidlink" data-id="${esc(c.__id)}" title="Edit ${esc(c.CID)}">${esc(c.CID)}</a></td><td>${esc(c.Customer)}</td><td>${esc(c.ServiceType)}</td>
     <td>${esc(devName(c.A_Device))} <span class="muted">${esc(c.A_Interface)}</span></td><td>${esc(devName(c.B_Device))} <span class="muted">${esc(c.B_Interface)}</span></td>
     <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td class="stick col-status">${statusCell(c)}</td>
-    <td class="stick col-edit">${(c.DeployStatus==="Pending"||c.LastDeployedConfig)?`<button class="ghost diffBtn" data-id="${esc(c.__id)}" title="Show the config this push changes vs the last deployed">Δ&nbsp;Diff</button> `:""}<button class="ghost editBtn" data-id="${esc(c.__id)}">Edit</button></td></tr>`;}).join("")
+    <td class="stick col-edit">${(c.DeployStatus==="Pending"||c.DeployStatus==="Failed"||c.LastDeployedConfig)?`<button class="ghost diffBtn" data-id="${esc(c.__id)}" title="Show the config this push changes vs the last deployed">Δ&nbsp;Diff</button> `:""}<button class="ghost editBtn" data-id="${esc(c.__id)}">Edit</button></td></tr>`;}).join("")
     || `<tr><td colspan="8" class="muted" style="padding:24px;text-align:center">No circuits match.</td></tr>`;
 }
 // Download the current (filtered) view as CSV — general reporting, incl. the reflector report.
@@ -1029,7 +1029,7 @@ function drawLP(){
     <td>${esc(devName(c.Device))}</td>
     <td><span class="muted">${esc(c.A_Interface)}.${esc(c.A_SubInt)}</span></td><td><span class="muted">${esc(c.B_Interface)}.${esc(c.B_SubInt)}</span></td>
     <td>${esc(c.A_VlanTag||c.A_SubInt||"")}</td><td class="stick col-status">${lpStatusCell(c)}</td>
-    <td class="stick col-edit">${(c.DeployStatus==="Pending"||c.LastDeployedConfig)?`<button class="ghost diffBtn" data-lpid="${esc(c.__id)}" title="Show the config this push changes vs the last deployed">Δ&nbsp;Diff</button> `:""}<button class="ghost editBtn" data-lpid="${esc(c.__id)}">Edit</button></td></tr>`;}).join("")
+    <td class="stick col-edit">${(c.DeployStatus==="Pending"||c.DeployStatus==="Failed"||c.LastDeployedConfig)?`<button class="ghost diffBtn" data-lpid="${esc(c.__id)}" title="Show the config this push changes vs the last deployed">Δ&nbsp;Diff</button> `:""}<button class="ghost editBtn" data-lpid="${esc(c.__id)}">Edit</button></td></tr>`;}).join("")
     || `<tr><td colspan="9" class="muted" style="padding:24px;text-align:center">No local patches yet.</td></tr>`;
 }
 async function openLpNew(){ LP_EDIT_ID=null; $("#lpModalTitle").textContent="New Local Patch";
