@@ -350,6 +350,13 @@ const SHAREPOINT_CONFIG = {
 };
 const DEMO = !SHAREPOINT_CONFIG.clientId || SHAREPOINT_CONFIG.clientId.startsWith("PUT_");
 const ENCAPS=["match-1-and-preserve","match-1-and-pop","match-2-and-preserve","match-2-and-pop-outer","match-2-and-pop-both","unmatched","unmatched-and-push","untagged-subinterface","untagged-and-push"];
+// VLAN-tag requirement by encapsulation. 'unmatched' and 'untagged-subinterface' carry NO VLAN
+// (the -and-push variants DO — they push a tag on the network side). match-2-* additionally need
+// an INNER tag. Mirrors _encapLines / configgen, so the form only requires what the config uses.
+const NO_VLAN_ENCAPS=new Set(["unmatched","untagged-subinterface"]);
+const INNER_VLAN_ENCAPS=new Set(["match-2-and-preserve","match-2-and-pop-outer","match-2-and-pop-both"]);
+const vlanRequired=e=>!NO_VLAN_ENCAPS.has(String(e||""));
+const innerVlanRequired=e=>INNER_VLAN_ENCAPS.has(String(e||""));
 // Fallback list; at runtime buildForm() replaces this with the live Arista Policers list so
 // the dropdown never drifts from the backend (add a policer in SharePoint -> it appears).
 let POLICERS=["10Gbps","5Gbps","3Gbps","2Gbps","1Gbps","500Mbps","250Mbps","100Mbps","50Mbps","20Mbps","MGMT"];
@@ -571,8 +578,8 @@ function endpointFields(p){ return `
   <div class="field"><label>Device <span class="req">*</span></label><select id="f_${p}_dev"></select></div>
   <div class="field"><label>Interface <span class="req">*</span></label><select id="f_${p}_int"><option value="">— pick a device first —</option></select></div>
   <div class="field"><label>Sub-interface <span class="req">*</span></label><input id="f_${p}_sub" type="number" placeholder="e.g. 100"/></div>
-  <div class="field"><label>VLAN Tag <span class="req">*</span></label><input id="f_${p}_vlan" type="number" placeholder="usually = sub-interface"/></div>
-  <div class="field"><label>Inner VLAN Tag</label><input id="f_${p}_ivlan" type="number" placeholder="only for double-tag encaps"/><div class="hint">Set only when the encapsulation needs a second (inner) tag.</div></div>
+  <div class="field"><label>VLAN Tag <span class="req">*</span> <span class="hint" style="font-weight:400">— not required for untagged / unmatched</span></label><input id="f_${p}_vlan" type="number" placeholder="usually = sub-interface"/></div>
+  <div class="field"><label>Inner VLAN Tag</label><input id="f_${p}_ivlan" type="number" placeholder="only for double-tag encaps"/><div class="hint">Required for the match-2 (double-tag) encaps; leave blank otherwise.</div></div>
   <div class="field"><label>Policer</label><select id="f_${p}_pol"><option value="">—</option>${POLICERS.map(x=>`<option>${x}</option>`).join("")}</select></div>
   <div class="field"><label>Encapsulation</label><select id="f_${p}_enc">${ENCAPS.map(e=>`<option${e==="match-1-and-preserve"?" selected":""}>${e}</option>`).join("")}</select></div>
   <div class="field"><label>Reflector</label><select id="f_${p}_ref"><option>Disabled</option><option>Enabled</option></select></div>
@@ -613,8 +620,15 @@ function checkDuplicate(){
   return hits.length===0;
 }
 function validate(){
-  const need={"#f_cid":"Circuit ID","#f_customer":"Customer","#f_serviceid":"Service ID","#f_svctype":"Service Type","#f_A_dev":"Endpoint A device","#f_A_int":"Endpoint A interface","#f_A_sub":"Endpoint A sub-interface","#f_A_vlan":"Endpoint A VLAN tag","#f_B_dev":"Endpoint B device","#f_B_int":"Endpoint B interface","#f_B_sub":"Endpoint B sub-interface","#f_B_vlan":"Endpoint B VLAN tag"};
+  const need={"#f_cid":"Circuit ID","#f_customer":"Customer","#f_serviceid":"Service ID","#f_svctype":"Service Type","#f_A_dev":"Endpoint A device","#f_A_int":"Endpoint A interface","#f_A_sub":"Endpoint A sub-interface","#f_B_dev":"Endpoint B device","#f_B_int":"Endpoint B interface","#f_B_sub":"Endpoint B sub-interface"};
   const m=Object.entries(need).filter(([s])=>!$(s).value).map(([,n])=>n);
+  // VLAN tag only required when the encapsulation actually uses one (not for untagged/unmatched);
+  // inner VLAN required for the double-tag (match-2-*) encaps. Per end, since A/B can differ.
+  for(const p of ["A","B"]){
+    const enc=$(`#f_${p}_enc`).value;
+    if(vlanRequired(enc) && !$(`#f_${p}_vlan`).value) m.push(`Endpoint ${p} VLAN tag`);
+    if(innerVlanRequired(enc) && !$(`#f_${p}_ivlan`).value) m.push(`Endpoint ${p} inner VLAN tag`);
+  }
   if(m.length){$("#valMsg").textContent="Required: "+m.join(", ");$("#valMsg").style.color="var(--danger)";return false;}
   $("#valMsg").textContent="";return true;
 }
@@ -781,7 +795,7 @@ const BULK_COLS=[
   {k:"A_Device",label:"A Device",type:"device",ep:"A",req:1},
   {k:"A_Interface",label:"A Interface",type:"iface",ep:"A",req:1},
   {k:"A_SubInt",label:"A Sub",type:"num",req:1,mirror:"A_VlanTag"},
-  {k:"A_VlanTag",label:"A VLAN",type:"num",req:1},
+  {k:"A_VlanTag",label:"A VLAN",type:"num"},
   {k:"A_InnerVlanTag",label:"A Inner",type:"num"},
   {k:"A_Policer",label:"A Policer",type:"select",opts:["",...POLICERS]},
   {k:"A_Encap",label:"A Encap",type:"select",opts:ENCAPS,def:"match-1-and-preserve"},
@@ -790,7 +804,7 @@ const BULK_COLS=[
   {k:"B_Device",label:"B Device",type:"device",ep:"B",req:1},
   {k:"B_Interface",label:"B Interface",type:"iface",ep:"B",req:1},
   {k:"B_SubInt",label:"B Sub",type:"num",req:1,mirror:"B_VlanTag"},
-  {k:"B_VlanTag",label:"B VLAN",type:"num",req:1},
+  {k:"B_VlanTag",label:"B VLAN",type:"num"},
   {k:"B_InnerVlanTag",label:"B Inner",type:"num"},
   {k:"B_Policer",label:"B Policer",type:"select",opts:["",...POLICERS]},
   {k:"B_Encap",label:"B Encap",type:"select",opts:ENCAPS,def:"match-1-and-preserve"},
@@ -887,6 +901,12 @@ function validateBulk(){
     const bad=new Set(), msgs=[];
     if(rowIsBlank(row)) return; // skip a wholly-blank row
     BULK_REQ.forEach(k=>{ if(String(row[k]==null?"":row[k]).trim()==="") bad.add(k); });
+    // VLAN tag only required when the encap uses one; inner VLAN for the match-2-* encaps.
+    for(const p of ["A","B"]){
+      const enc=String(row[p+"_Encap"]||"match-1-and-preserve");
+      if(vlanRequired(enc) && String(row[p+"_VlanTag"]==null?"":row[p+"_VlanTag"]).trim()==="") bad.add(p+"_VlanTag");
+      if(innerVlanRequired(enc) && String(row[p+"_InnerVlanTag"]==null?"":row[p+"_InnerVlanTag"]).trim()==="") bad.add(p+"_InnerVlanTag");
+    }
     if(bad.size) msgs.push("missing "+[...bad].length+" required");
     const cid=String(row.CID||"").trim().toLowerCase();
     if(cid){ if(existCid.has(cid)) {bad.add("CID"); msgs.push("CID already exists");}
@@ -982,8 +1002,8 @@ let LP=[], LP_EDIT_ID=null, LP_BUILT=false;
 function lpEndFields(p){ return `
   <div class="field"><label>Interface <span class="req">*</span></label><select id="lp_${p}_int"><option value="">— pick a device first —</option></select></div>
   <div class="field"><label>Sub-interface <span class="req">*</span></label><input id="lp_${p}_sub" type="number" placeholder="e.g. 500"/></div>
-  <div class="field"><label>VLAN Tag <span class="req">*</span></label><input id="lp_${p}_vlan" type="number" placeholder="usually = sub-interface"/></div>
-  <div class="field"><label>Inner VLAN Tag</label><input id="lp_${p}_ivlan" type="number" placeholder="only for double-tag encaps"/></div>
+  <div class="field"><label>VLAN Tag <span class="req">*</span> <span class="hint" style="font-weight:400">— not required for untagged / unmatched</span></label><input id="lp_${p}_vlan" type="number" placeholder="usually = sub-interface"/></div>
+  <div class="field"><label>Inner VLAN Tag</label><input id="lp_${p}_ivlan" type="number" placeholder="only for double-tag encaps"/><div class="hint">Required for the match-2 (double-tag) encaps; leave blank otherwise.</div></div>
   <div class="field"><label>Encapsulation</label><select id="lp_${p}_enc">${ENCAPS.map(e=>`<option${e==="match-1-and-preserve"?" selected":""}>${e}</option>`).join("")}</select></div>
   <div class="field"><label>Policer</label><select id="lp_${p}_pol"><option value="">—</option>${POLICERS.map(x=>`<option>${x}</option>`).join("")}</select></div>
   <div class="field"><label>Reflector</label><select id="lp_${p}_ref"><option>Disabled</option><option>Enabled</option></select></div>
@@ -1053,9 +1073,14 @@ async function fillLpForm(c){
 }
 function lpValidate(){
   const need={"#lp_cid":"Circuit ID","#lp_customer":"Customer","#lp_dev":"Device",
-    "#lp_A_int":"End A interface","#lp_A_sub":"End A sub-interface","#lp_A_vlan":"End A VLAN",
-    "#lp_B_int":"End B interface","#lp_B_sub":"End B sub-interface","#lp_B_vlan":"End B VLAN"};
+    "#lp_A_int":"End A interface","#lp_A_sub":"End A sub-interface",
+    "#lp_B_int":"End B interface","#lp_B_sub":"End B sub-interface"};
   const m=Object.entries(need).filter(([s])=>!$(s).value).map(([,n])=>n);
+  for(const p of ["A","B"]){
+    const enc=$(`#lp_${p}_enc`).value;
+    if(vlanRequired(enc) && !$(`#lp_${p}_vlan`).value) m.push(`End ${p} VLAN`);
+    if(innerVlanRequired(enc) && !$(`#lp_${p}_ivlan`).value) m.push(`End ${p} inner VLAN`);
+  }
   if(m.length){$("#lpValMsg").textContent="Required: "+m.join(", ");$("#lpValMsg").style.color="var(--danger)";return false;}
   if($("#lp_A_int").value===$("#lp_B_int").value && String($("#lp_A_sub").value)===String($("#lp_B_sub").value)){
     $("#lpValMsg").textContent="End A and End B can't be the same interface + sub-interface.";$("#lpValMsg").style.color="var(--danger)";return false;}
